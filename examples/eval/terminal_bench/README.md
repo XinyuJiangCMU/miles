@@ -21,21 +21,10 @@ git clone https://github.com/laude-institute/terminal-bench
 ## 2) Launch the Miles container
 
 ```bash
-docker run \
-  -itd \
-  --gpus all \
-  --shm-size 32g \
-  --network host \
-  --ipc=host \
-  --privileged \
-  --ulimit memlock=-1 \
-  --ulimit stack=67108864 \
-  --ulimit nofile=65536:65536 \
-  -v /mnt/data/.cache:/root/.cache \
-  -v $(pwd):/shared/miles-tb \
-  --name <miles container name> \
-  radixark/miles:latest \
-  /bin/bash
+docker run -itd --shm-size 32g --gpus all --network host -v /data/cache/huggingface:/root/.cache/huggingface -v /data:/data --ipc=host --ulimit nofile=65536:65536 --ulimit memlock=-1 --ulimit stack=67108864 --privileged --name sglang-rl-xinyu-jiang2 radixark/miles:latest /bin/bash
+# 下次要改
+docker run -itd --shm-size 32g --gpus all --network host -v /data:/data --ipc=host --ulimit nofile=65536:65536 --ulimit memlock=-1 --ulimit stack=67108864 --privileged --name sglang-rl-xinyu-jiang2 radixark/miles:latest /bin/bash
+
 ```
 
 ## 3) Inside the Miles container
@@ -77,7 +66,7 @@ Run on the host (same machine where `tb` works):
 
 ```bash
 python miles/examples/eval/terminal_bench/tb_server.py \
-  --host 0.0.0.0 --port 9051 \
+  --host 0.0.0.0 --port 9052 \
   --output-root tb_eval_output
 ```
 
@@ -101,7 +90,7 @@ Then download the HuggingFace model checkpoint inside the Miles container:
 
 ```bash
 huggingface-cli download open-thoughts/OpenThinker-Agent-v1 \
---local-dir /root/.cache/OpenThinker-Agent-v1
+--local-dir /root/.cache/huggingface/OpenThinker-Agent-v1
 ```
 
 After downloading, convert the HuggingFace checkpoint to Miles's torch distributed format. From the Miles root directory, run:

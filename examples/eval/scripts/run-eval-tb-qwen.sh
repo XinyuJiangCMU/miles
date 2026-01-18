@@ -110,7 +110,7 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.7
-   --sglang-router-port 30005
+   --sglang-router-port 30015
 )
 
 MISC_ARGS=(
@@ -122,16 +122,15 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-export CUDA_VISIBLE_DEVICES=4,5,6,7
-# export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=2,3
 
-ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 4 \
+ray start --head --node-ip-address ${MASTER_ADDR} --port 6390 --num-gpus 2 \
             --disable-usage-stats \
             --dashboard-host=0.0.0.0 \
-            --dashboard-port=8266 \
-            --dashboard-agent-listen-port 52366 \
-            --dashboard-agent-grpc-port 52367 \
-            --runtime-env-agent-port 52368
+            --dashboard-port=8276 \
+            --dashboard-agent-listen-port 52376 \
+            --dashboard-agent-grpc-port 52377 \
+            --runtime-env-agent-port 52378
 
 
 RUNTIME_ENV_JSON="{
@@ -141,12 +140,12 @@ RUNTIME_ENV_JSON="{
   }
 }"
 
-ray job submit --address="http://${MASTER_ADDR}:8266" \
+ray job submit --address="http://${MASTER_ADDR}:8276" \
    --working-dir "${REPO_ROOT}" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 4 \
+   --actor-num-gpus-per-node 2 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
