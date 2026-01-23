@@ -2,10 +2,18 @@
 Simple multi-turn generation with tool calling.
 """
 
-from typing import Any
+import argparse
+import json
+import uuid
+
+from pydantic import TypeAdapter
+from sglang.srt.entrypoints.openai.protocol import Tool
+from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_hub.tool_call_utils import tokenize_tool_responses
 from miles.utils.http_utils import post
+from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
 
@@ -18,17 +26,25 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
+    execute_tool_function = load_function(args.generate_execute_tool_function_path)
+
+    tool_specs = load_function(args.generate_tool_specs_path)
+    assert isinstance(tool_specs, list)
+
+    tool_call_parser = FunctionCallParser(
+        tools=(TypeAdapter(list[Tool]).validate_python(tool_specs)),
+        tool_call_parser=args.generate_tool_call_parser,
+    )
+
     # Set up the initial prompt with system prompt and tools (outside the loop)
-    tool_specs = tool_registry.get_tool_specs()
-    prompt = format_conversation_with_tools(prompt=sample.prompt, tools=tool_specs)
+    prompt = tokenizer.apply_chat_template(sample.prompt, tokenize=False, add_generation_prompt=True, tools=tool_specs)
 
     prompt_tokens_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     response = ""
     response_token_ids = []
     loss_masks = []
-    tool_call_count = 0  # Track actual tool call rounds
 
-    for turn in range(TOOL_CONFIGS["max_turns"]):
+    for turn in range(args.generate_max_turns):
         # Check if total length exceeds max context length
         total_length = len(prompt_tokens_ids) + len(response_token_ids)
         if args.rollout_max_context_len is not None:
@@ -54,18 +70,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             sample.status = Sample.Status.ABORTED
             return GenerateFnOutput(samples=sample)
 
-        if "output_token_logprobs" in output["meta_info"]:
-            cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-            cur_response = tokenizer.decode(cur_response_token_ids)
-            cur_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-            if sample.rollout_log_probs is None:
-                sample.rollout_log_probs = []
-            sample.rollout_log_probs += cur_log_probs
-
-        else:
-            cur_response = output["text"]
-            cur_response = postprocess_responses(cur_response)
-            cur_response_token_ids = tokenizer(cur_response, add_special_tokens=False)["input_ids"]
+        cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+        cur_response = tokenizer.decode(cur_response_token_ids)
+        cur_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+        if sample.rollout_log_probs is None:
+            sample.rollout_log_probs = []
+        sample.rollout_log_probs += cur_log_probs
 
         response += cur_response
         response_token_ids += cur_response_token_ids
@@ -75,31 +85,25 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if output["meta_info"]["finish_reason"]["type"] == "length":
             break
 
-        next_obs, done = await execute_predictions(cur_response)
-        if done:
+        _, parsed_tool_calls = tool_call_parser.parse_non_stream(cur_response)
+        if len(parsed_tool_calls) == 0:
             break
 
-        # Count tool calls (when we get interpreter output, it means a tool
-        # was called)
-        if "<interpreter>" in next_obs:
-            tool_call_count += 1
+        tool_messages = await _execute_tool_calls(parsed_tool_calls, execute_tool_function)
 
-        assert next_obs != "", "Next observation should not be empty."
-        obs_tokens_ids = tokenizer(next_obs, add_special_tokens=False)["input_ids"]
-        response += next_obs
-        response_token_ids += obs_tokens_ids
-        loss_masks += [0] * len(obs_tokens_ids)
+        next_obs_tokens_ids: list[int] = tokenize_tool_responses(tool_messages, tokenizer=tokenizer)
+        # TODO is this ok?
+        response += tokenizer.decode(next_obs_tokens_ids)
+        response_token_ids += next_obs_tokens_ids
+        loss_masks += [0] * len(next_obs_tokens_ids)
 
-        # Add dummy log probs for observation tokens (they won't be used due to loss_mask=0)
-        # Check if maximum tool call count reached
-        if sample.rollout_log_probs is not None:
-            sample.rollout_log_probs += [0.0] * len(obs_tokens_ids)
+        sample.rollout_log_probs += [0.0] * len(next_obs_tokens_ids)
 
-            assert len(response_token_ids) == len(
-                sample.rollout_log_probs
-            ), f"Token/logp length mismatch at turn {turn}: {len(response_token_ids)} tokens vs {len(sample.rollout_log_probs)} logps"
+        assert len(response_token_ids) == len(
+            sample.rollout_log_probs
+        ), f"Token/logp length mismatch at turn {turn}: {len(response_token_ids)} tokens vs {len(sample.rollout_log_probs)} logps"
 
-        if turn >= TOOL_CONFIGS["max_tool_calls"]:
+        if turn >= args.generate_max_tool_calls:
             break
 
     # Set sample attributes
@@ -114,23 +118,30 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     return GenerateFnOutput(samples=sample)
 
 
-def format_conversation_with_tools(
-    prompt: str, tools: list[dict[str, Any]] = None, system_prompt: str = None, messages: list[dict[str, Any]] = None
-) -> str:
-    return TODO
+def _add_arguments(parser: argparse.ArgumentParser):
+    parser.add_argument("--generate-max-turns", type=int, default=16)
+    parser.add_argument("--generate-max-tool-calls", type=int, default=16)
+    parser.add_argument("--generate-tool-specs-path", type=str)
+    parser.add_argument("--generate-tool-call-parser", type=str)
+    parser.add_argument("--generate-execute-tool-function-path", type=str)
 
 
-def postprocess_predictions(prediction: str):
-    """Extract action and content from prediction string"""
-    return TODO, TODO
+generate.add_arguments = _add_arguments
 
 
-def postprocess_responses(resp: str) -> str:
-    return TODO
-
-
-async def execute_predictions(prediction: str) -> str:
-    """Execute predictions and return results"""
-    action, content = postprocess_predictions(prediction)
-    next_obs, done = TODO
-    return next_obs, done
+async def _execute_tool_calls(parsed_tool_calls, execute_one) -> list[dict]:
+    tool_messages = []
+    for call in parsed_tool_calls:
+        params = json.loads(call.parameters) if call.parameters else {}
+        result = await execute_one(call.name, params)
+        assert isinstance(result, str)
+        tool_messages.append(
+            {
+                "role": "tool",
+                # src: serving_chat.py :: _process_tool_call_id
+                "tool_call_id": f"call_{uuid.uuid4().hex[:24]}",
+                "content": result,
+                "name": call.name,
+            }
+        )
+    return tool_messages
