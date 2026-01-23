@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.rollout.modular_rollout.orchestration_common import GenerateState
+from miles.rollout.modular_rollout.orchestration_common import GenerateState, generate_and_rm_group
 from miles.utils.http_utils import get, post
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
@@ -16,7 +16,7 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
-async def abort(state: GenerateState, rollout_id: int) -> list[list[Sample]]:
+async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[list[Sample]]:
     args = state.args
 
     aborted_samples = []
@@ -36,8 +36,8 @@ async def abort(state: GenerateState, rollout_id: int) -> list[list[Sample]]:
 
     # make sure all the pending tasks are finished
     count = 0
-    while state.pendings:
-        done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
+    while pendings:
+        done, pendings = await asyncio.wait(pendings, return_when=asyncio.FIRST_COMPLETED)
 
         if not args.partial_rollout:
             continue
@@ -57,6 +57,21 @@ async def abort(state: GenerateState, rollout_id: int) -> list[list[Sample]]:
     return aborted_samples
 
 
+def submit_generate_tasks(state: GenerateState, samples: list[list[Sample]]):
+    return [
+        asyncio.create_task(
+            # submit a group of samples as a single task.
+            generate_and_rm_group(
+                state,
+                group,
+                sampling_params=state.sampling_params.copy(),
+                evaluation=False,
+            )
+        )
+        for group in samples
+    ]
+
+
 async def generate_rollout_async(
     state: GenerateState, rollout_id: int, data_source: Callable[[int], list[list[Sample]]]
 ) -> tuple[RolloutFnTrainOutput, list[list[Sample]]]:
@@ -73,18 +88,19 @@ async def generate_rollout_async(
     # target_data_size is the total number of valid samples to get
     target_data_size = args.rollout_batch_size
 
+    pendings = set()
     data = []
     all_data = []
     do_print = True
     pbar = tqdm(total=target_data_size * args.n_samples_per_prompt, desc="Rollout generation")
     while len(data) < target_data_size:
-        while state.remaining_batch_size < target_data_size:
+        while len(data) + len(pendings) < target_data_size:
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
-            state.submit_generate_tasks(samples)
+            pendings |= submit_generate_tasks(state, samples)
 
         # wait for the generation to finish
-        done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
+        done, pendings = await asyncio.wait(pendings, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             group: list[Sample] = task.result()
 
@@ -100,7 +116,6 @@ async def generate_rollout_async(
             dynamic_filter_output = call_dynamic_filter(dynamic_filter, args, group)
             if not dynamic_filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
-                state.remaining_batch_size -= 1
                 continue
 
             # add the samples to the data
@@ -116,7 +131,7 @@ async def generate_rollout_async(
     )
 
     # there are still some unfinished requests, abort them
-    aborted_samples = await abort(state, rollout_id)
+    aborted_samples = await abort(state, pendings, rollout_id)
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
