@@ -39,7 +39,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     prompt = sample.prompt
     if not isinstance(prompt, str):
         prompt = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True, tools=tool_specs)
-    prompt_tokens_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+    prompt_tokens_ids = tokenizer.encode(prompt, add_special_tokens=False)
 
     response = ""
     response_token_ids = []
@@ -66,13 +66,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
         output = await post(url, payload)
 
-        # Handle abort
-        if output["meta_info"]["finish_reason"]["type"] == "abort":
-            sample.status = Sample.Status.ABORTED
-            return GenerateFnOutput(samples=sample)
-
         cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-        cur_response = tokenizer.decode(cur_response_token_ids)
+        cur_response = output["text"]
         cur_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
         if sample.rollout_log_probs is None:
             sample.rollout_log_probs = []
@@ -82,8 +77,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         response_token_ids += cur_response_token_ids
         loss_masks += [1] * len(cur_response_token_ids)
 
-        # Check length limit
-        if output["meta_info"]["finish_reason"]["type"] == "length":
+        # Set status
+        sample.update_from_meta_info(args, output["meta_info"])
+
+        finish_reason_type = output["meta_info"]["finish_reason"]["type"]
+        if finish_reason_type in ("abort", "length"):
             break
 
         _, parsed_tool_calls = tool_call_parser.parse_non_stream(cur_response)
@@ -104,24 +102,17 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             sample.rollout_log_probs
         ), f"Token/logp length mismatch at turn {turn}: {len(response_token_ids)} tokens vs {len(sample.rollout_log_probs)} logps"
 
-        if turn >= args.generate_max_tool_calls:
-            break
-
     # Set sample attributes
     sample.tokens = prompt_tokens_ids + response_token_ids
     sample.response_length = len(response_token_ids)
     sample.response = response
     sample.loss_mask = loss_masks
 
-    # Set status
-    sample.update_from_meta_info(args, output["meta_info"])
-
     return GenerateFnOutput(samples=sample)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--generate-max-turns", type=int, default=16)
-    parser.add_argument("--generate-max-tool-calls", type=int, default=16)
     parser.add_argument("--generate-tool-specs-path", type=str)
     parser.add_argument("--generate-tool-call-parser", type=str)
     parser.add_argument("--generate-execute-tool-function-path", type=str)
