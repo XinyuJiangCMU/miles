@@ -8,7 +8,9 @@ from transformers import AutoTokenizer
 
 from miles.utils.test_utils.mock_sglang_server import ProcessResult
 from miles.utils.test_utils.mock_tools import (
+    MULTI_TURN_FIRST_PROMPT,
     MULTI_TURN_FIRST_RESPONSE,
+    MULTI_TURN_SECOND_PROMPT,
     MULTI_TURN_SECOND_RESPONSE,
     SAMPLE_TOOLS,
     multi_turn_tool_call_process_fn,
@@ -24,21 +26,8 @@ _ = generation_env, SAMPLE_TOOLS, multi_turn_tool_call_process_fn
 MODEL_NAME = "Qwen/Qwen3-0.6B"
 DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-
-MULTI_TURN_EXTRA_ARGV = [
-    "--generate-max-turns",
-    "4",
-    "--generate-max-tool-calls",
-    "4",
-    "--generate-tool-specs-path",
-    "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
-    "--generate-tool-call-parser",
-    "qwen25",
-    "--generate-execute-tool-function-path",
-    "miles.utils.test_utils.mock_tools.execute_tool_call",
-    "--rollout-max-context-len",
-    "4096",
-]
+FIRST_PROMPT_TOKEN_IDS = TOKENIZER(MULTI_TURN_FIRST_PROMPT, add_special_tokens=False)["input_ids"]
+SECOND_PROMPT_TOKEN_IDS = TOKENIZER(MULTI_TURN_SECOND_PROMPT, add_special_tokens=False)["input_ids"]
 
 
 @pytest.fixture(params=["multi_turn_single_sample"])
@@ -56,8 +45,8 @@ class SampleParsedChunk:
 def parse_sample_into_chunks(sample: Sample, tokenizer) -> list[SampleParsedChunk]:
     prompt_len = len(sample.tokens) - sample.response_length
     response_tokens = sample.tokens[prompt_len:]
-    loss_mask = sample.loss_mask
-    log_probs = sample.rollout_log_probs
+    loss_mask = sample.loss_mask or []
+    log_probs = sample.rollout_log_probs or []
 
     chunks = []
     idx = 0
@@ -119,8 +108,21 @@ def _run_generate(variant: str, env: GenerateEnv, sample: Sample, sampling_param
     return run_generate(env, sample, sampling_params, variant=variant)
 
 
+def expected_request(input_ids: list[int], sampling_params: dict | None = None) -> dict:
+    return {
+        "input_ids": input_ids,
+        "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
+        "return_logprob": True,
+    }
+
+
 SINGLE_TURN_PROMPT = [{"role": "user", "content": "What is 1+1?"}]
 SINGLE_TURN_RESPONSE = "The answer is 2."
+_SINGLE_TURN_PROMPT_TEXT = TOKENIZER.apply_chat_template(
+    SINGLE_TURN_PROMPT, tokenize=False, add_generation_prompt=True, tools=SAMPLE_TOOLS
+)
+SINGLE_TURN_PROMPT_TOKEN_IDS = TOKENIZER(_SINGLE_TURN_PROMPT_TEXT, add_special_tokens=False)["input_ids"]
+SINGLE_TURN_PROMPT_TOKEN_LEN = len(SINGLE_TURN_PROMPT_TOKEN_IDS)
 
 TWO_TURN_USER_QUESTION = "What is 42 + year + temperature?"
 TWO_TURN_PROMPT = [{"role": "user", "content": TWO_TURN_USER_QUESTION}]
@@ -140,11 +142,6 @@ TWO_TURN_TOOL_RESPONSE = (
 
 
 class TestBasicMultiTurn:
-    @pytest.mark.parametrize(
-        "generation_env",
-        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
-        indirect=True,
-    )
     def test_single_turn_no_tool_call(self, variant, generation_env):
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=SINGLE_TURN_RESPONSE, finish_reason="stop"
@@ -152,7 +149,7 @@ class TestBasicMultiTurn:
 
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
-        assert len(result.requests) == 1
+        assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
         verify_sample(
             result.sample,
             expected_chunks=[
@@ -169,17 +166,15 @@ class TestBasicMultiTurn:
             ),
         )
 
-    @pytest.mark.parametrize(
-        "generation_env",
-        [{"args_kwargs": {"extra_argv": MULTI_TURN_EXTRA_ARGV}}],
-        indirect=True,
-    )
     def test_two_turns_with_tool_call(self, variant, generation_env):
         generation_env.mock_server.process_fn = multi_turn_tool_call_process_fn
 
         result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
 
-        assert len(result.requests) == 2
+        assert result.requests == [
+            expected_request(FIRST_PROMPT_TOKEN_IDS),
+            expected_request(SECOND_PROMPT_TOKEN_IDS),
+        ]
         verify_sample(
             result.sample,
             expected_chunks=[
@@ -203,5 +198,94 @@ class TestBasicMultiTurn:
                 prompt=TWO_TURN_PROMPT,
                 response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE + MULTI_TURN_SECOND_RESPONSE,
                 response_length=45 + 31 + 24,
+            ),
+        )
+
+
+class TestExitConditions:
+    def test_partial_rollout_not_supported(self, variant, generation_env):
+        generation_env.args.partial_rollout = True
+
+        with pytest.raises(AssertionError, match="Partial rollout is not supported"):
+            _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+
+    def test_abort_preserves_content(self, variant, generation_env):
+        pytest.skip("TODO: support")
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=SINGLE_TURN_RESPONSE, finish_reason="abort"
+        )
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+
+        assert result.requests == [expected_request(SINGLE_TURN_PROMPT_TOKEN_IDS)]
+        verify_sample(
+            result.sample,
+            expected_chunks=[
+                SampleParsedChunk(
+                    tokens_decoded_str=SINGLE_TURN_RESPONSE,
+                    loss_mask_value=1,
+                    rollout_log_probs=[-1 / 128 * i for i in range(6)],
+                ),
+            ],
+            expected_partial_sample=expected_partial_sample(
+                prompt=SINGLE_TURN_PROMPT,
+                response=SINGLE_TURN_RESPONSE,
+                response_length=6,
+                status=Sample.Status.ABORTED,
+            ),
+        )
+
+    def test_finish_reason_length_exits_and_preserves_content(self, variant, generation_env):
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=MULTI_TURN_FIRST_RESPONSE, finish_reason="length"
+        )
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
+
+        assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
+        verify_sample(
+            result.sample,
+            expected_chunks=[
+                SampleParsedChunk(
+                    tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
+                    loss_mask_value=1,
+                    rollout_log_probs=[-1 / 128 * i for i in range(45)],
+                ),
+            ],
+            expected_partial_sample=expected_partial_sample(
+                prompt=TWO_TURN_PROMPT,
+                response=MULTI_TURN_FIRST_RESPONSE,
+                response_length=45,
+                status=Sample.Status.TRUNCATED,
+            ),
+        )
+
+    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"generate_max_turns": 1}}], indirect=True)
+    def test_max_turns_reached(self, variant, generation_env):
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=MULTI_TURN_FIRST_RESPONSE, finish_reason="stop"
+        )
+
+        result = _run_generate(variant, generation_env, make_sample(prompt=TWO_TURN_PROMPT))
+
+        assert result.requests == [expected_request(FIRST_PROMPT_TOKEN_IDS)]
+        verify_sample(
+            result.sample,
+            expected_chunks=[
+                SampleParsedChunk(
+                    tokens_decoded_str=MULTI_TURN_FIRST_RESPONSE,
+                    loss_mask_value=1,
+                    rollout_log_probs=[-1 / 128 * i for i in range(45)],
+                ),
+                SampleParsedChunk(
+                    tokens_decoded_str=TWO_TURN_TOOL_RESPONSE,
+                    loss_mask_value=0,
+                    rollout_log_probs=[0.0] * 31,
+                ),
+            ],
+            expected_partial_sample=expected_partial_sample(
+                prompt=TWO_TURN_PROMPT,
+                response=MULTI_TURN_FIRST_RESPONSE + TWO_TURN_TOOL_RESPONSE,
+                response_length=45 + 31,
             ),
         )
