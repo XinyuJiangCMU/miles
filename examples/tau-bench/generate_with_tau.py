@@ -6,6 +6,7 @@ using the miles framework. It handles agent-environment interactions and convert
 results to the format expected by miles's training pipeline.
 """
 
+import json
 import logging
 import os
 from typing import Any
@@ -31,7 +32,7 @@ TAU_CONFIGS = {
     "user_model_provider": "gemini",
 }
 # Replace with your actual API key for user sim
-GEMINI_API_KEY = "NONE"
+GEMINI_API_KEY = "AIzaSyBeeBp4CcwvATE0PnoccvSK02qfzjQhRgo"
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 tau_config = RunConfig(**TAU_CONFIGS)
 
@@ -148,6 +149,27 @@ async def generate(args: dict[str, Any], sample: Sample, sampling_params: dict) 
 
     # Convert to miles Sample format
     result_sample = res_to_sample(interaction_result, task_index)
+
+    # Append a compact jsonl record for easy inspection
+    try:
+        log_path = "/root/result_sample.log"
+        record = {
+            "task_index": task_index,
+            "interaction_result": {
+                "prompt": interaction_result.prompt,
+                "reward": interaction_result.reward,
+                "messages": interaction_result.messages,
+                "info": interaction_result.info,
+                "response": interaction_result.response,
+                "loss_mask": interaction_result.loss_mask,
+                "tokens": interaction_result.tokens,
+                "status": interaction_result.status.value if hasattr(interaction_result.status, "value") else str(interaction_result.status),
+            },
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=True) + "\n")
+    except Exception:
+        logger.exception("Failed to write interaction_result to /root/result_sample.log")
 
     logger.info(f"Finished agent-environment interaction for task {task_index}")
     return result_sample
