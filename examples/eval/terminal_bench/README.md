@@ -31,9 +31,9 @@ docker run \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   --ulimit nofile=65536:65536 \
-  -v /mnt/data/.cache:/root/.cache \
-  -v $(pwd):/shared/miles-tb \
-  --name <miles container name> \
+  -v /data/.cache:/root/.cache \
+  -v /data:/root \
+  --name sglang-rl-xinyu-jiang-01 \
   radixark/miles:latest \
   /bin/bash
 ```

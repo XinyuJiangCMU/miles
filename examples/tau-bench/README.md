@@ -5,7 +5,23 @@ This example shows miles training in an agentic multi-turn tool use environment.
 ## Environment Setup 
 Use the `zhuzilin/miles:latest` image and initialize the environment required for Search-R1:
 
+
+
 ```bash
+docker run \
+  -itd \
+  --gpus all \
+  --shm-size 32g \
+  --ipc=host \
+  --privileged \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  --ulimit nofile=65536:65536 \
+  -v /data/.cache:/root/.cache \
+  --name sglang-rl-xinyu-jiang-01 \
+  radixark/miles:latest \
+  /bin/bash
+  
 cd /root/
 git clone https://github.com/radixark/miles.git
 cd miles
@@ -29,15 +45,15 @@ Initialize the Qwen2.5-3B-Instruct model needed for tool use:
 
 ```bash
 # hf checkpoint
-huggingface-cli download Qwen/Qwen3-4B-Instruct-2507 --local-dir /root/Qwen3-4B-Instruct-2507
+huggingface-cli download Qwen/Qwen3-4B-Instruct-2507 --local-dir /root/.cache/Qwen3-4B-Instruct-2507
 
 # mcore checkpoint
 cd /root/miles
 source scripts/models/qwen3-4B-Instruct-2507.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
-    --hf-checkpoint /root/Qwen3-4B-Instruct-2507 \
-    --save /root/Qwen3-4B-Instruct-2507_torch_dist
+    --hf-checkpoint /root/.cache/Qwen3-4B-Instruct-2507 \
+    --save /root/.cache/Qwen3-4B-Instruct-2507_torch_dist
 ```
 
 ## Running the Script
