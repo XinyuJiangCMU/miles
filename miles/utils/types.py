@@ -7,7 +7,11 @@ import torch
 
 @dataclass
 class Sample:
-    """The sample generated"""
+    """The sample generated.
+
+    Use a single Sample as the default trajectory container. Put segment/turn
+    details into metadata or train_metadata.
+    """
 
     group_index: int | None = None
     index: int | None = None

@@ -76,6 +76,9 @@ class RolloutManager:
             self.custom_convert_samples_to_train_data_func = load_function(
                 self.args.custom_convert_samples_to_train_data_path
             )
+        self.rollout_samples_preprocess_func = None
+        if self.args.rollout_samples_preprocess_path is not None:
+            self.rollout_samples_preprocess_func = load_function(self.args.rollout_samples_preprocess_path)
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
@@ -352,8 +355,18 @@ class RolloutManager:
         """
         Convert inference generated samples to training data.
         """
+        if self.rollout_samples_preprocess_func is not None:
+            samples = self.rollout_samples_preprocess_func(self.args, samples)
+
         if self.custom_convert_samples_to_train_data_func is not None:
             return self.custom_convert_samples_to_train_data_func(self.args, samples)
+
+        if not samples:
+            raise ValueError("No samples provided for conversion to training data.")
+
+        # Flatten nested sample groups for the default converter.
+        while isinstance(samples[0], list):
+            samples = list(itertools.chain.from_iterable(samples))
 
         raw_rewards, rewards = self._post_process_rewards(samples)
 

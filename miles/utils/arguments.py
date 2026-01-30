@@ -1263,6 +1263,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--rollout-samples-preprocess-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a function that preprocesses samples before converting to training data. "
+                    "Use this to reorder/filter samples without re-implementing conversion. "
+                    "The function should have the signature "
+                    "`def preprocess_samples(args, samples) -> list[Sample] | list[list[Sample]]` and "
+                    "should ensure the final sample count is compatible with global_batch_size "
+                    "(or enable --use-dynamic-global-batch-size)."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-all-samples-process-path",
                 type=str,
                 default=None,
