@@ -209,23 +209,14 @@ def _compute_log_probs_miles_style(
     logits: torch.Tensor, tokens: torch.Tensor
 ) -> torch.Tensor:
     """
-    与 Miles ppo_utils._calculate_log_probs_and_entropy_true_on_policy 完全一致的 logprob 计算。
-    优先使用 Miles 的实现（若可导入），否则用相同公式。
+    使用 Miles ppo_utils._calculate_log_probs_and_entropy_true_on_policy 计算 logprob（必须安装 miles）。
     """
-    try:
-        from miles.utils.ppo_utils import _calculate_log_probs_and_entropy_true_on_policy
+    import miles.utils.ppo_utils as miles_ppo
 
-        log_prob, _ = _calculate_log_probs_and_entropy_true_on_policy(
-            logits, tokens, with_entropy=False
-        )
-        return log_prob
-    except ImportError:
-        pass
-    # 本地实现，与 Miles 公式一致
-    if logits.size(0) == 0:
-        return logits.new_zeros((0,))
-    log_probs_full = torch.log_softmax(logits, dim=-1)
-    log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
+    print(f"[Miles] ppo_utils 路径: {miles_ppo.__file__}")
+    log_prob, _ = miles_ppo._calculate_log_probs_and_entropy_true_on_policy(
+        logits, tokens, with_entropy=False
+    )
     return log_prob
 
 
