@@ -35,6 +35,9 @@ HF 侧可配置：
   python3 test_fsdp_sglang_logprob_align.py --host localhost --port 30000 --save-rollout results/rollout.txt
   python3 test_fsdp_sglang_logprob_align.py --load-rollout results/rollout.txt --attn-implementation sdpa
 
+  # FSDP 侧使用 batch_invariant_ops（替换 mm/addmm/bmm/log_softmax/mean，输出调用统计）
+  python3 test_fsdp_sglang_logprob_align.py --host localhost --port 30000 --use-batch-invariant
+
 输出：
   逐 token 对比报告，以及 PASS/FAIL 结论。
 
@@ -51,6 +54,11 @@ import os
 import sys
 from datetime import datetime
 from typing import List, Optional, Tuple
+
+# 确保 /app/program 在 PYTHONPATH，以便 import batch_invariant_trace
+_program_dir = os.path.dirname(os.path.abspath(__file__))
+if _program_dir not in sys.path:
+    sys.path.insert(0, _program_dir)
 
 import requests
 import torch
@@ -127,6 +135,11 @@ def parse_args():
         type=str,
         default=None,
         help="从 txt 加载 rollout 数据，跳过 SGLang，直接做 FSDP forward 并比对",
+    )
+    parser.add_argument(
+        "--use-batch-invariant",
+        action="store_true",
+        help="FSDP 侧使用 batch_invariant_ops 替换 mm/addmm/bmm/log_softmax/mean（需安装 sglang）",
     )
     return parser.parse_args()
 
@@ -225,6 +238,7 @@ def hf_get_logprobs(
     token_ids: List[int],
     device: str,
     attn_implementation: str = "sdpa",
+    use_batch_invariant: bool = False,
 ) -> torch.Tensor:
     """
     用 HuggingFace 模型做 teacher-forcing forward，模拟 Miles FSDP 的 logprob 计算。
@@ -232,6 +246,19 @@ def hf_get_logprobs(
     Returns:
         logprobs: shape (1, seq_len-1)，即对每个位置 i 预测 token[i+1] 的 logprob
     """
+    if use_batch_invariant:
+        try:
+            from batch_invariant_trace import (
+                enable_batch_invariant_mode_with_tracing,
+                reset_call_counts,
+            )
+            reset_call_counts()
+            enable_batch_invariant_mode_with_tracing()
+        except ImportError as e:
+            raise ImportError(
+                " --use-batch-invariant 需要安装 sglang 且 batch_invariant_trace 在 PYTHONPATH 内: " + str(e)
+            ) from e
+
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
     except ImportError:
@@ -255,6 +282,9 @@ def hf_get_logprobs(
     # logits[:, :-1] 预测 tokens[:, 1:]，与 Miles get_responses + _calculate_log_probs 一致
     response_logits = logits[:, :-1, :].float()  # (1, seq_len-1, V)
     response_tokens = ids[:, 1:]  # (1, seq_len-1)
+
+    if torch.isnan(response_logits).any() or torch.isinf(response_logits).any():
+        print("WARN: logits 含 nan/inf，batch_invariant 可能有问题")
 
     logprobs = _compute_log_probs_miles_style(response_logits, response_tokens)
 
@@ -447,6 +477,7 @@ def main():
         print(f"  SGLang: http://{args.host}:{args.port}")
     print(f"  模型:   {args.model_path}")
     print(f"  HF attn_implementation: {args.attn_implementation}")
+    print(f"  batch_invariant_ops:   {'是' if getattr(args, 'use_batch_invariant', False) else '否'}")
     print(f"  容差:   {args.tolerance}")
     if not load_rollout:
         print(f"  Prompt: {args.prompt[:50]}...")
@@ -514,17 +545,24 @@ def main():
 
     # 2/3. FSDP 侧 teacher-forcing forward
     step = 2 if load_rollout else 3
-    print(f"\n[{step}] FSDP 侧 teacher-forcing forward（HF attn={args.attn_implementation}）...")
+    batch_invariant_str = " + batch_invariant_ops" if getattr(args, "use_batch_invariant", False) else ""
+    print(f"\n[{step}] FSDP 侧 teacher-forcing forward（HF attn={args.attn_implementation}{batch_invariant_str}）...")
     try:
         logprobs_hf = hf_get_logprobs(
             args.model_path,
             full_token_ids,
             args.device,
             attn_implementation=args.attn_implementation,
+            use_batch_invariant=getattr(args, "use_batch_invariant", False),
         )
     except Exception as e:
         print(f"错误: HF forward 失败: {e}")
         sys.exit(1)
+
+    if getattr(args, "use_batch_invariant", False):
+        from batch_invariant_trace import print_call_counts
+
+        print_call_counts()
 
     # 3/4. 比对 logprob
     step_compare = 3 if load_rollout else 4
