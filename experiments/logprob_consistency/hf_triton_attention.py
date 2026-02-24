@@ -4,7 +4,9 @@ HF Triton Attention - 对接 SGLang Triton attention，
 
 实现 extend + decode 拆分：
   - extend 段（0..extend_len-1）：context_attention_fwd（prefill）
-  - decode 段（extend_len..S-1）：decode_attention_fwd（decode）
+  - decode 段（extend_len..S-1）：
+    - 首 token (p==extend_len)：extend_attention_fwd_unified（与 SGLang 一致）
+    - 后续 token：decode_attention_fwd
 
 extend_len 获取优先级：
   1. set_extend_len_context() 设置的 context 值（推荐，上层在 model forward 前调用）
@@ -22,6 +24,7 @@ _extend_len_ctx: ContextVar[Optional[int]] = ContextVar("triton_extend_len", def
 # 延迟导入，避免未用 triton 时加载 sglang
 _context_attention_fwd = None
 _decode_attention_fwd = None
+_extend_attention_fwd_unified = None
 
 
 def set_extend_len_context(extend_len: int):
@@ -58,6 +61,16 @@ def _get_decode_attention_fwd():
         )
         _decode_attention_fwd = decode_attention_fwd
     return _decode_attention_fwd
+
+
+def _get_extend_attention_fwd_unified():
+    global _extend_attention_fwd_unified
+    if _extend_attention_fwd_unified is None:
+        from sglang.srt.layers.attention.triton_ops.extend_attention import (
+            extend_attention_fwd_unified,
+        )
+        _extend_attention_fwd_unified = extend_attention_fwd_unified
+    return _extend_attention_fwd_unified
 
 
 def triton_attention_forward(
@@ -129,12 +142,8 @@ def triton_attention_forward(
         )
         o[:, :extend_len] = o_ext.reshape(B, extend_len, H, D_v)
 
-        # 2) Decode: extend_len..S-1，逐 position 调用
-        # decode kernel 需要的 buffer/indices 格式（见 Step 1/3）：
-        #   k_buffer, v_buffer: [total_tokens, kv_heads, head_dim]，连续存储
-        #   kv_indptr: [batch+1]，cumsum，kv_indptr[b+1]-kv_indptr[b]=batch b 的 seq_len
-        #   kv_indices: [total_tokens]，kv_indices[kv_indptr[b]:kv_indptr[b+1]] 为 batch b 的 buffer 索引
-        # HF key[:,:,:p+1] -> k_buffer: 按 batch 拼接，buffer[i]=batch(i//seq_len) 的 position(i%seq_len)
+        # 2) Decode 段：extend_len..S-1
+        # 首 token (p==extend_len) 用 extend_attention_fwd_unified，其余用 decode_attention_fwd
         sm_scale = scaling if scaling is not None else (1.0 / (D ** 0.5))
         max_kv_splits = 8
         num_kv_splits = torch.ones(B, dtype=torch.int32, device=q.device)
@@ -142,30 +151,54 @@ def triton_attention_forward(
         for p in range(extend_len, S):
             seq_len = p + 1  # position p 需 attend 到 0..p 共 seq_len 个 token
             q_p = q[:, p, :, :]  # (B, H, D)
-            # key[:,:,:p+1] -> k_buffer: (B, seq_len, kv_heads, D) -> (B*seq_len, kv_heads, D)
-            k_p = k[:, :seq_len, :, :].reshape(B * seq_len, kv_heads, D)
-            v_p = v[:, :seq_len, :, :].reshape(B * seq_len, kv_heads, D_v)
-            # contiguous 存储：batch 0 占 slot 0..seq_len-1，batch 1 占 seq_len..2*seq_len-1
-            kv_indptr = torch.arange(0, B + 1, device=q.device, dtype=torch.int32) * seq_len
-            kv_indices = torch.arange(B * seq_len, device=q.device, dtype=torch.int32)
 
-            attn_logits = torch.empty(
-                B, H, max_kv_splits, D_v,
-                dtype=torch.float32, device=q.device
-            )
-            attn_lse = torch.empty(
-                B, H, max_kv_splits,
-                dtype=torch.float32, device=q.device
-            )
+            if p == extend_len:
+                # 首个生成 token：用 extend kernel（与 SGLang 一致）
+                L = extend_len + 1
+                k_buf = k[:, :L, :, :].reshape(B * L, kv_heads, D)
+                v_buf = v[:, :L, :, :].reshape(B * L, kv_heads, D_v)
+                qo_indptr = torch.arange(0, B + 1, device=q.device, dtype=torch.int32)
+                kv_indptr = torch.arange(0, B + 1, device=q.device, dtype=torch.int32) * L
+                kv_indices = torch.arange(B * L, device=q.device, dtype=torch.int32)
+                prefix_lens = torch.full((B,), extend_len, device=q.device, dtype=torch.int32)
 
-            decode_attention_fwd(
-                q_p, k_p, v_p,
-                o[:, p],
-                kv_indptr, kv_indices,
-                attn_logits, attn_lse,
-                num_kv_splits, max_kv_splits,
-                sm_scale,
-            )
+                extend_attention_fwd_unified = _get_extend_attention_fwd_unified()
+                extend_attention_fwd_unified(
+                    q_p,
+                    o[:, p],
+                    k_buf,
+                    v_buf,
+                    qo_indptr,
+                    kv_indptr,
+                    kv_indices,
+                    prefix_lens,
+                    max_len_extend=1,
+                    sm_scale=sm_scale,
+                    is_causal=True,
+                )
+            else:
+                # 后续 token：用 decode kernel
+                k_p = k[:, :seq_len, :, :].reshape(B * seq_len, kv_heads, D)
+                v_p = v[:, :seq_len, :, :].reshape(B * seq_len, kv_heads, D_v)
+                kv_indptr = torch.arange(0, B + 1, device=q.device, dtype=torch.int32) * seq_len
+                kv_indices = torch.arange(B * seq_len, device=q.device, dtype=torch.int32)
+
+                attn_logits = torch.empty(
+                    B, H, max_kv_splits, D_v,
+                    dtype=torch.float32, device=q.device
+                )
+                attn_lse = torch.empty(
+                    B, H, max_kv_splits,
+                    dtype=torch.float32, device=q.device
+                )
+                decode_attention_fwd(
+                    q_p, k_p, v_p,
+                    o[:, p],
+                    kv_indptr, kv_indices,
+                    attn_logits, attn_lse,
+                    num_kv_splits, max_kv_splits,
+                    sm_scale,
+                )
 
     attn_output = o
     if D_v != D:
