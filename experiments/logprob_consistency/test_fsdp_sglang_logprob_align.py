@@ -17,16 +17,21 @@ HF 侧可配置：
 
 用法：
   # 1. 先启动 SGLang（建议设置 SGLANG_RETURN_ORIGINAL_LOGPROB=1）
+  #    FA3 对齐（NVIDIA，与 Miles true-on-policy 一致，需加 --rl-on-policy-target fsdp）：
   SGLANG_RETURN_ORIGINAL_LOGPROB=1 CUDA_VISIBLE_DEVICES=1 python -m sglang.launch_server \\
       --model-path Qwen/Qwen3-8B \\
-      --attention-backend triton \\
+      --attention-backend fa3 \\
       --mem-fraction-static 0.7 \\
       --host 0.0.0.0 --port 30000 \\
       --enable-deterministic-inference \\
-      --disable-radix-cache
+      --disable-radix-cache \\
+      --rl-on-policy-target fsdp
+
+  #    Triton 对齐（无 FA3 时）：
+  #  SGLANG_RETURN_ORIGINAL_LOGPROB=1 ... --attention-backend triton （不加 rl-on-policy-target）
 
   # 2. 运行本脚本
-  python3 test_fsdp_sglang_logprob_align.py --host localhost --port 30000
+  python3 test_fsdp_sglang_logprob_align.py --host localhost --port 30000 --attn-implementation flash_attention_3
   python3 test_fsdp_sglang_logprob_align.py --host localhost --port 30000 --attn-implementation sdpa
   python3 test_fsdp_sglang_logprob_align.py --host localhost --port 30000 --attn-implementation eager
   python3 test_fsdp_sglang_logprob_align.py --max-new-tokens 20 --tolerance 1e-4
@@ -35,8 +40,12 @@ HF 侧可配置：
   python3 test_fsdp_sglang_logprob_align.py --host localhost --port 30000 --save-rollout results/rollout.txt
   python3 test_fsdp_sglang_logprob_align.py --load-rollout results/rollout.txt --attn-implementation sdpa
 
-  # FSDP 侧使用 batch_invariant_ops（替换 mm/addmm/bmm/log_softmax/mean，输出调用统计）
-  python3 test_fsdp_sglang_logprob_align.py --host localhost --port 30000 --use-batch-invariant
+  # FSDP 侧使用 batch_invariant_ops（与 Miles 一致，enable_bmm=False）
+  python3 test_fsdp_sglang_logprob_align.py --host localhost --port 30000 \\
+      --attn-implementation flash_attention_3 --use-batch-invariant
+
+  # 可选：提高确定性（与 Miles 一致）
+  # export NCCL_ALGO=allreduce:tree NVTE_ALLOW_NONDETERMINISTIC_ALGO=0 CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 输出：
   逐 token 对比报告，以及 PASS/FAIL 结论。
@@ -85,8 +94,8 @@ def parse_args():
         "--attn-implementation",
         type=str,
         default="sdpa",
-        choices=["sdpa", "eager", "flash_attention_2", "flash_attention_3"],
-        help="HF attn_implementation: sdpa|eager|flash_attention_2|flash_attention_3",
+        choices=["sdpa", "eager", "flash_attention_2", "flash_attention_3", "triton"],
+        help="HF attn_implementation: sdpa|eager|flash_attention_2|flash_attention_3|triton",
     )
     parser.add_argument(
         "--prompt",
@@ -260,9 +269,13 @@ def hf_get_logprobs(
             ) from e
 
     try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer, AttentionInterface
     except ImportError:
         raise ImportError("需要安装 transformers: pip install transformers")
+
+    if attn_implementation == "triton":
+        from hf_triton_attention import triton_attention_forward
+        AttentionInterface.register("triton", triton_attention_forward)
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
