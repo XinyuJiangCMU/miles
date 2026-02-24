@@ -477,7 +477,11 @@ def main():
         print(f"  SGLang: http://{args.host}:{args.port}")
     print(f"  模型:   {args.model_path}")
     print(f"  HF attn_implementation: {args.attn_implementation}")
-    print(f"  batch_invariant_ops:   {'是' if getattr(args, 'use_batch_invariant', False) else '否'}")
+    use_bi = getattr(args, "use_batch_invariant", False)
+    if use_bi:
+        print(f"  batch_invariant_ops:   是")
+    else:
+        print(f"  batch_invariant_ops:   否")
     print(f"  容差:   {args.tolerance}")
     if not load_rollout:
         print(f"  Prompt: {args.prompt[:50]}...")
@@ -547,6 +551,7 @@ def main():
     step = 2 if load_rollout else 3
     batch_invariant_str = " + batch_invariant_ops" if getattr(args, "use_batch_invariant", False) else ""
     print(f"\n[{step}] FSDP 侧 teacher-forcing forward（HF attn={args.attn_implementation}{batch_invariant_str}）...")
+
     try:
         logprobs_hf = hf_get_logprobs(
             args.model_path,
