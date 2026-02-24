@@ -248,10 +248,14 @@ def hf_get_logprobs(
     device: str,
     attn_implementation: str = "sdpa",
     use_batch_invariant: bool = False,
+    prompt_len: Optional[int] = None,
 ) -> torch.Tensor:
     """
     用 HuggingFace 模型做 teacher-forcing forward，模拟 Miles FSDP 的 logprob 计算。
 
+    Args:
+        prompt_len: prompt token 数量，用于 Triton attention 的 extend_len 分界。
+                    未传时 Triton 用默认 14；传入则 extend 段=0..prompt_len-1，decode 段=prompt_len..S-1。
     Returns:
         logprobs: shape (1, seq_len-1)，即对每个位置 i 预测 token[i+1] 的 logprob
     """
@@ -274,7 +278,11 @@ def hf_get_logprobs(
         raise ImportError("需要安装 transformers: pip install transformers")
 
     if attn_implementation == "triton":
-        from hf_triton_attention import triton_attention_forward
+        from hf_triton_attention import (
+            reset_extend_len_context,
+            set_extend_len_context,
+            triton_attention_forward,
+        )
         AttentionInterface.register("triton", triton_attention_forward)
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -288,9 +296,17 @@ def hf_get_logprobs(
 
     ids = torch.tensor([token_ids], dtype=torch.long, device=model.device)
 
-    with torch.no_grad():
-        outputs = model(ids)
-        logits = outputs.logits  # (1, seq_len, vocab_size)
+    extend_token = None
+    if attn_implementation == "triton" and prompt_len is not None:
+        extend_token = set_extend_len_context(prompt_len)
+
+    try:
+        with torch.no_grad():
+            outputs = model(ids)
+            logits = outputs.logits  # (1, seq_len, vocab_size)
+    finally:
+        if extend_token is not None:
+            reset_extend_len_context(extend_token)
 
     # logits[:, :-1] 预测 tokens[:, 1:]，与 Miles get_responses + _calculate_log_probs 一致
     response_logits = logits[:, :-1, :].float()  # (1, seq_len-1, V)
@@ -572,6 +588,7 @@ def main():
             args.device,
             attn_implementation=args.attn_implementation,
             use_batch_invariant=getattr(args, "use_batch_invariant", False),
+            prompt_len=prompt_len,
         )
     except Exception as e:
         print(f"错误: HF forward 失败: {e}")
@@ -595,24 +612,28 @@ def main():
     )
 
     # 5. 输出
+    diffs = [d["diff"] for d in details if "diff" in d]
+    mean_abs_diff = sum(diffs) / len(diffs) if diffs else 0.0
+
     print("\n" + "-" * 70)
-    print("逐 token 对比（前 10 个）:")
+    print(f"逐 token 对比（共 {len(details)} 个）:")
     print("-" * 70)
-    for d in details[:10]:
+    for d in details:
         status = "✓" if d["match"] else "✗"
+        txt = (d.get("token_text", "") or "")[:8]
         print(
-            f"  {status} pos={d['pos']:2d}  SGLang={d['logprob_sglang']:.8f}  "
+            f"  {status} pos={d['pos']:2d}  {txt:<8}  SGLang={d['logprob_sglang']:.8f}  "
             f"HF={d['logprob_hf']:.8f}  diff={d['diff']:.2e}"
         )
-    if len(details) > 10:
-        print(f"  ... 共 {len(details)} 个 token")
 
-    print("\n" + "=" * 70)
+    print("-" * 70)
+    print(f"[metric] mean(|diff|) = {mean_abs_diff:.6e}  (n={len(diffs)})")
+    print("=" * 70)
     if all_match:
         print("✓ PASS: SGLang 与 FSDP-style (HF) logprob 完全一致")
     else:
         mismatches = sum(1 for d in details if not d["match"])
-        print(f"✗ FAIL: {mismatches}/{len(details)} 个 token logprob 不一致")
+        print(f"✗ FAIL: {mismatches}/{len(details)} 个 token logprob 不一致 (容差={args.tolerance})")
     print("=" * 70)
 
     # 6. 保存 JSON
