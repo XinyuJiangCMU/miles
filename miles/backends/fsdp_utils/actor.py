@@ -92,11 +92,24 @@ class FSDPTrainRayActor(TrainRayActor):
 
         init_context = self._get_init_weight_context_manager()
 
+        effective_attn = (
+            "eager"
+            if getattr(self.args, "attn_implementation", None) == "sglang_triton"
+            else self.args.attn_implementation
+        )
         with init_context():
             model = self.get_model_cls().from_pretrained(
                 self.args.hf_checkpoint,
                 trust_remote_code=True,
-                attn_implementation=self.args.attn_implementation,
+                attn_implementation=effective_attn,
+            )
+
+        if getattr(self.args, "attn_implementation", None) == "sglang_triton":
+            from .models.sglang_triton_attention import apply_sglang_triton_attention_patch
+
+            n = apply_sglang_triton_attention_patch(model)
+            logger.info(
+                f"FSDPTrainRayActor applied sglang_triton attention patch to {n} layer(s)"
             )
 
         model.train()
@@ -591,12 +604,22 @@ class FSDPTrainRayActor(TrainRayActor):
 
             init_context = self._get_init_weight_context_manager()
 
+            effective_attn = (
+                "eager"
+                if getattr(self.args, "attn_implementation", None) == "sglang_triton"
+                else self.args.attn_implementation
+            )
             with init_context():
                 ref_model = self.get_model_cls().from_pretrained(
                     ref_load_path,
                     trust_remote_code=True,
-                    attn_implementation=self.args.attn_implementation,
+                    attn_implementation=effective_attn,
                 )
+
+            if getattr(self.args, "attn_implementation", None) == "sglang_triton":
+                from .models.sglang_triton_attention import apply_sglang_triton_attention_patch
+
+                apply_sglang_triton_attention_patch(ref_model)
 
             full_state = ref_model.state_dict()
 
