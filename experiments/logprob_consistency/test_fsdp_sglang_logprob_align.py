@@ -13,7 +13,7 @@ FSDP vs SGLang Logprob 对齐测试（SGLang 存 → FSDP 读 → teacher-forcin
   3. 比较 rollout_logprobs 与 FSDP forward 的 logprob
 
 HF 侧可配置：
-  - --attn-implementation: sdpa|eager|flash_attention_2|flash_attention_3（HF 无 triton）
+  - --attn-implementation: sdpa|eager|flash_attention_2|flash_attention_3|triton|unified_replay
 
 用法：
   # 1. 先启动 SGLang（建议设置 SGLANG_RETURN_ORIGINAL_LOGPROB=1）
@@ -94,8 +94,18 @@ def parse_args():
         "--attn-implementation",
         type=str,
         default="sdpa",
-        choices=["sdpa", "eager", "flash_attention_2", "flash_attention_3", "triton"],
-        help="HF attn_implementation: sdpa|eager|flash_attention_2|flash_attention_3|triton",
+        choices=[
+            "sdpa",
+            "eager",
+            "flash_attention_2",
+            "flash_attention_3",
+            "triton",
+            "unified_replay",
+        ],
+        help=(
+            "HF attn_implementation: "
+            "sdpa|eager|flash_attention_2|flash_attention_3|triton|unified_replay"
+        ),
     )
     parser.add_argument(
         "--prompt",
@@ -273,9 +283,14 @@ def hf_get_logprobs(
     except ImportError:
         raise ImportError("需要安装 transformers: pip install transformers")
 
-    if attn_implementation == "triton":
-        from hf_triton_attention import triton_attention_forward
+    if attn_implementation in ("triton", "unified_replay"):
+        from hf_triton_attention import (
+            triton_attention_forward,
+            unified_replay_attention_forward,
+        )
+
         AttentionInterface.register("triton", triton_attention_forward)
+        AttentionInterface.register("unified_replay", unified_replay_attention_forward)
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
