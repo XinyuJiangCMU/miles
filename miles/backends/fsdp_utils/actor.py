@@ -652,6 +652,7 @@ class FSDPTrainRayActor(TrainRayActor):
             "input_ids": input_ids,
             "position_ids": position_ids,
             "attention_mask": None,
+            "use_cache": False,
         }
 
         if batch.get("multimodal_train_inputs"):
