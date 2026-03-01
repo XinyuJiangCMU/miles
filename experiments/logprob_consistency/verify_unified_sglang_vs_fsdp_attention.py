@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unified-only attention parity experiment.
+Unified-only attention parity experiment (MHA + GQA).
 
 Compare two unified-family representations on the same Q/K/V:
 
@@ -14,7 +14,7 @@ Route B (FSDP-side full-extend / zero-prefix):
   - Compare per-position outputs with Route A.
 
 Scope:
-  - batch=1, MHA only
+  - batch=1
   - no sliding window / sinks / custom mask
   - bf16 default
 """
@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import torch
 
@@ -51,28 +51,32 @@ from sglang.srt.layers.attention.triton_ops.extend_attention import (  # noqa: E
 
 def build_test_inputs(
     seq_len: int,
-    num_heads: int,
+    num_q_heads: int,
+    num_kv_heads: int,
     head_dim: int,
     dtype: torch.dtype,
     device: str,
     seed: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
     """
-    Build random Q/K/V for batch=1 and return flattened [S,H,D] tensors.
+    Build random Q/K/V for batch=1 and return flattened tensors.
+
+    q: [S, q_heads, D]
+    k/v: [S, kv_heads, D]
     """
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    q = torch.randn((1, seq_len, num_heads, head_dim), dtype=dtype, device=device)
-    k = torch.randn((1, seq_len, num_heads, head_dim), dtype=dtype, device=device)
-    v = torch.randn((1, seq_len, num_heads, head_dim), dtype=dtype, device=device)
+    q = torch.randn((1, seq_len, num_q_heads, head_dim), dtype=dtype, device=device)
+    k = torch.randn((1, seq_len, num_kv_heads, head_dim), dtype=dtype, device=device)
+    v = torch.randn((1, seq_len, num_kv_heads, head_dim), dtype=dtype, device=device)
     return q[0].contiguous(), k[0].contiguous(), v[0].contiguous(), head_dim ** -0.5
 
 
 def run_route_a_sglang_q1(
-    q_all: torch.Tensor,  # [S,H,D]
-    k_buffer: torch.Tensor,  # [S,H,D]
-    v_buffer: torch.Tensor,  # [S,H,D]
+    q_all: torch.Tensor,  # [S,qH,D]
+    k_buffer: torch.Tensor,  # [S,kvH,D]
+    v_buffer: torch.Tensor,  # [S,kvH,D]
     sm_scale: float,
 ) -> torch.Tensor:
     """
@@ -122,9 +126,9 @@ def run_route_a_sglang_q1(
 
 
 def run_route_b_fsdp_full_extend_zero_prefix(
-    q_all: torch.Tensor,  # [S,H,D]
-    k_buffer: torch.Tensor,  # [S,H,D]
-    v_buffer: torch.Tensor,  # [S,H,D]
+    q_all: torch.Tensor,  # [S,qH,D]
+    k_buffer: torch.Tensor,  # [S,kvH,D]
+    v_buffer: torch.Tensor,  # [S,kvH,D]
     sm_scale: float,
 ) -> torch.Tensor:
     """
@@ -235,7 +239,8 @@ def parse_sweep(v: str) -> List[int]:
 
 def run_case(
     seq_len: int,
-    num_heads: int,
+    num_q_heads: int,
+    num_kv_heads: int,
     head_dim: int,
     dtype: torch.dtype,
     device: str,
@@ -245,7 +250,7 @@ def run_case(
     show_failures: int,
 ) -> Dict[str, object]:
     q_all, k_buffer, v_buffer, sm_scale = build_test_inputs(
-        seq_len, num_heads, head_dim, dtype, device, seed
+        seq_len, num_q_heads, num_kv_heads, head_dim, dtype, device, seed
     )
     o_a = run_route_a_sglang_q1(q_all, k_buffer, v_buffer, sm_scale)
     o_b = run_route_b_fsdp_full_extend_zero_prefix(q_all, k_buffer, v_buffer, sm_scale)
@@ -266,7 +271,11 @@ def main() -> None:
     )
     parser.add_argument("--seq-len", type=int, default=32)
     parser.add_argument("--sweep-seq-lens", type=str, default="")
-    parser.add_argument("--num-heads", type=int, default=8)
+    # Backward-compatible shorthand for MHA config.
+    parser.add_argument("--num-heads", type=int, default=None)
+    # Explicit q/kv heads for GQA.
+    parser.add_argument("--num-q-heads", type=int, default=None)
+    parser.add_argument("--num-kv-heads", type=int, default=None)
     parser.add_argument("--head-dim", type=int, default=64)
     parser.add_argument("--dtype", type=str, default="bfloat16", choices=["bfloat16"])
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda"])
@@ -281,6 +290,26 @@ def main() -> None:
             "No CUDA/HIP GPU available. On ROCm, device string should still be 'cuda'."
         )
 
+    # Resolve head config:
+    # 1) If only --num-heads is given -> MHA (q=kv=num-heads).
+    # 2) Else use explicit q/kv values (defaults to MHA 8/8 if nothing provided).
+    if args.num_heads is not None:
+        if args.num_q_heads is not None or args.num_kv_heads is not None:
+            raise ValueError(
+                "Use either --num-heads OR (--num-q-heads and --num-kv-heads), not both."
+            )
+        num_q_heads = args.num_heads
+        num_kv_heads = args.num_heads
+    else:
+        num_q_heads = args.num_q_heads if args.num_q_heads is not None else 8
+        num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else num_q_heads
+
+    if num_q_heads % num_kv_heads != 0:
+        raise ValueError(
+            f"Invalid GQA config: num_q_heads({num_q_heads}) % "
+            f"num_kv_heads({num_kv_heads}) != 0."
+        )
+
     dtype = getattr(torch, args.dtype)
     if args.sweep_seq_lens.strip():
         seq_lens = parse_sweep(args.sweep_seq_lens)
@@ -291,7 +320,8 @@ def main() -> None:
     print("Unified-only Attention Parity")
     print("=" * 80)
     print(
-        f"config: B=1, H={args.num_heads}, D={args.head_dim}, dtype={args.dtype}, "
+        f"config: B=1, q_heads={num_q_heads}, kv_heads={num_kv_heads}, "
+        f"D={args.head_dim}, dtype={args.dtype}, "
         f"device={args.device}, seed={args.seed}"
     )
     print(
@@ -308,7 +338,8 @@ def main() -> None:
         print(f"running seq_len={s} ...")
         r = run_case(
             seq_len=s,
-            num_heads=args.num_heads,
+            num_q_heads=num_q_heads,
+            num_kv_heads=num_kv_heads,
             head_dim=args.head_dim,
             dtype=dtype,
             device=args.device,
