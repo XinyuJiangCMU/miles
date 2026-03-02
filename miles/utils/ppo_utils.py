@@ -8,6 +8,24 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from miles.backends.training_utils.parallel import ParallelState
 
+_dumper = None
+
+
+def _maybe_dump(name: str, value: torch.Tensor) -> None:
+    global _dumper
+    if _dumper is False:
+        return
+    if _dumper is None:
+        try:
+            _dumper = __import__(
+                "sglang.srt.debug_utils.dumper",
+                fromlist=["dumper"],
+            ).dumper
+        except Exception:
+            _dumper = False
+            return
+    _dumper.dump(name, value)
+
 
 @torch.compile(dynamic=True)
 def compute_approx_kl(
@@ -710,8 +728,12 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         entropy = logits.new_zeros((0,)) if with_entropy else None
         return log_prob, entropy
 
+    _maybe_dump("next_token_logits_raw", logits)
     log_probs_full = torch.log_softmax(logits, dim=-1)
+    _maybe_dump("next_token_logprobs_full", log_probs_full)
+    _maybe_dump("next_token_id", tokens)
     log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
+    _maybe_dump("next_token_logprob_selected", log_prob)
 
     entropy = None
     if with_entropy:
