@@ -58,7 +58,6 @@ def apply_sglang_triton_attention_patch(model):
         if getattr(module, "_sglang_triton_patched", False):
             continue
 
-        module._sglang_triton_original_forward = module.forward
         module.forward = types.MethodType(qwen3_triton_forward, module)
         module._sglang_triton_patched = True
         patched += 1

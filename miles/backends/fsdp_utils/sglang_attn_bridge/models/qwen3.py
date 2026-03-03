@@ -32,16 +32,6 @@ def qwen3_triton_forward(
     **kwargs,
 ):
     """Qwen3-like attention semantic path with unified extend kernel."""
-    if past_key_values is not None:
-        return self._sglang_triton_original_forward(
-            hidden_states,
-            position_embeddings=position_embeddings,
-            attention_mask=attention_mask,
-            past_key_values=past_key_values,
-            cache_position=cache_position,
-            **kwargs,
-        )
-
     batch, seq_len, _ = hidden_states.shape
     head_dim = getattr(self, "head_dim", None)
     if head_dim is None and hasattr(self, "config"):
