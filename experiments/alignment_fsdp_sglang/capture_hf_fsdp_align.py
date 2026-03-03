@@ -150,9 +150,6 @@ def hf_get_tensor_dumps(
     from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 
     if attn_implementation == "triton":
-        attention_dir = Path("/app/true_on_policy/experiment/attention_test")
-        if str(attention_dir) not in os.sys.path:
-            os.sys.path.insert(0, str(attention_dir))
         from hf_triton_attention import triton_attention_forward
 
         AttentionInterface.register("triton", triton_attention_forward)

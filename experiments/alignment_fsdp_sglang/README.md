@@ -41,5 +41,8 @@ Notes:
 - First version focuses on a minimal single-process, single-sample, single-step run.
 - The FSDP-side script wraps the HF model with Miles `apply_fsdp2(...)` under a
   single-rank process group.
+- The FSDP-side Triton attention shim is vendored locally as
+  `hf_triton_attention.py`, originally derived from the experiment workspace,
+  so this lab no longer depends on `/app/true_on_policy/experiment/attention_test`.
 - Tensor names intentionally mirror the existing `experiment/` alignment names to
   reduce compare friction.
