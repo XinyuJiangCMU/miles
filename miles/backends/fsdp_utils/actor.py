@@ -105,7 +105,9 @@ class FSDPTrainRayActor(TrainRayActor):
             )
 
         if getattr(self.args, "attn_implementation", None) == "sglang_triton":
-            from .sglang_attn_bridge.patch import apply_sglang_triton_attention_patch
+            from .sglang_attn_bridge.hf_sglang_triton_patch import (
+                apply_sglang_triton_attention_patch,
+            )
 
             n = apply_sglang_triton_attention_patch(model)
             logger.info(
@@ -617,7 +619,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 )
 
             if getattr(self.args, "attn_implementation", None) == "sglang_triton":
-                from .sglang_attn_bridge.patch import apply_sglang_triton_attention_patch
+                from .sglang_attn_bridge.hf_sglang_triton_patch import (
+                    apply_sglang_triton_attention_patch,
+                )
 
                 apply_sglang_triton_attention_patch(ref_model)
 

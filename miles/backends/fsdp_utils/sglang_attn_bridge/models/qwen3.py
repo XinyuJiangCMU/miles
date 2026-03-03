@@ -1,8 +1,8 @@
-"""Qwen3 semantic adapter for SGLang Triton attention bridge."""
+"""Qwen3 semantic adapter for the SGLang Triton HF patch path."""
 
 import torch
 
-from ..kernels.unified_extend import run_unified_extend
+from ..kernels.triton_extend_attn_unified import run_unified_extend
 
 
 def _resolve_rotary():

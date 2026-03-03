@@ -1,4 +1,4 @@
-"""Kernel wrapper for SGLang unified extend attention."""
+"""Wrapper around SGLang Triton extend_attention_fwd_unified kernel."""
 
 import torch
 
@@ -10,7 +10,7 @@ def run_unified_extend(
     batch: int,
     seq_len: int,
 ) -> torch.Tensor:
-    """Run extend_attention_fwd_unified in teacher-forcing prefill mode."""
+    """Execute unified extend attention in teacher-forcing prefill mode."""
     from sglang.srt.layers.attention.triton_ops.extend_attention import (
         extend_attention_fwd_unified,
     )

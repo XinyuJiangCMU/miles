@@ -1,4 +1,4 @@
-"""Monkey patch entry for SGLang Triton attention bridge."""
+"""HF-side monkey patch entry for the SGLang Triton attention bridge."""
 
 import types
 
@@ -15,7 +15,7 @@ def _is_patchable_attention(module) -> bool:
 
 
 def apply_sglang_triton_attention_patch(model):
-    """Replace HF attention forwards with SGLang unified extend implementation."""
+    """Patch HF attention modules to use the SGLang Triton unified-extend path."""
     patched = 0
     for _name, module in model.named_modules():
         if not _is_patchable_attention(module):
