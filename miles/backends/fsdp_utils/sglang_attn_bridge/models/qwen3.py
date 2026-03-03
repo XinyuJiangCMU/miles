@@ -2,7 +2,7 @@
 
 import torch
 
-from ..kernels.triton_extend_attn_unified import run_unified_extend
+from ..hf_sglang_triton_patch import run_unified_extend
 
 
 def _resolve_rotary():
