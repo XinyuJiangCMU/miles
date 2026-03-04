@@ -15,6 +15,7 @@ from utils.tensor_specs import (
     FOCUS_TO_NAMES,
     HF_DROP_LAST_TOKEN_NAMES,
     HF_NAME_OVERRIDE,
+    SG_NAME_OVERRIDE,
     SECTION_GROUPS,
     SQUEEZE_BATCH1_NAMES,
 )
@@ -36,7 +37,11 @@ def parse_args() -> argparse.Namespace:
 def load_indices(path: Path | None, dump_dir: Path, side: str) -> dict[str, int]:
     if path is not None and path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
-    return resolve_indices(dump_dir, ALL_COMPARE_NAMES, HF_NAME_OVERRIDE if side == "hf" else None)
+    if side == "hf":
+        name_override = HF_NAME_OVERRIDE
+    else:
+        name_override = SG_NAME_OVERRIDE
+    return resolve_indices(dump_dir, ALL_COMPARE_NAMES, name_override)
 
 
 def load_value(dump_dir: Path, name: str, idx: int):
@@ -87,8 +92,9 @@ def compare_one(
         return lines, payload
 
     hf_name = HF_NAME_OVERRIDE.get(name, name)
+    sg_name = SG_NAME_OVERRIDE.get(name, name)
     x_hf_raw = load_value(hf_dir, hf_name, hf_idx)
-    x_sg_raw = load_value(sg_dir, name, sg_idx)
+    x_sg_raw = load_value(sg_dir, sg_name, sg_idx)
     payload["hf_raw_shape"] = list(x_hf_raw.shape)
     payload["sg_raw_shape"] = list(x_sg_raw.shape)
     lines.append(f"  hf raw shape: {tuple(x_hf_raw.shape)}")

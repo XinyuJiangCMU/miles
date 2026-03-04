@@ -202,6 +202,41 @@ def hf_get_tensor_dumps(
             normed = x_fp32 * torch.rsqrt(variance + eps)
             return weight.to(torch.float32) * normed
 
+        def _capture_norm_outputs(
+            prefix: str,
+            q: torch.Tensor,
+            k: torch.Tensor,
+            q_4d: torch.Tensor,
+            k_4d: torch.Tensor,
+            q_norm_module,
+            k_norm_module,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            # Native inputs are the exact tensors passed into HF q_norm/k_norm,
+            # flattened back to the compare-friendly layout.
+            _maybe_dump(f"{prefix}q_norm_input_native", _hf_slice(q_4d.reshape_as(q)))
+            _maybe_dump(f"{prefix}k_norm_input_native", _hf_slice(k_4d.reshape_as(k)))
+
+            # Native outputs come from the actual HF Qwen3RMSNorm.forward().
+            qn_native = q_norm_module(q_4d).reshape_as(q)
+            kn_native = k_norm_module(k_4d).reshape_as(k)
+            _maybe_dump(f"{prefix}q_post_norm_native", _hf_slice(qn_native))
+            _maybe_dump(f"{prefix}k_post_norm_native", _hf_slice(kn_native))
+
+            # Aligned outputs preserve the existing SGLang-style fp32 emulation path.
+            qn = _sglang_style_qk_rmsnorm_fp32(
+                q_4d,
+                q_norm_module.weight,
+                q_norm_module.variance_epsilon,
+            ).reshape_as(q)
+            kn = _sglang_style_qk_rmsnorm_fp32(
+                k_4d,
+                k_norm_module.weight,
+                k_norm_module.variance_epsilon,
+            ).reshape_as(k)
+            _maybe_dump(f"{prefix}q_post_norm", _hf_slice(qn))
+            _maybe_dump(f"{prefix}k_post_norm", _hf_slice(kn))
+            return qn, kn
+
         def _self_attn_pre_bf16(_module, args, kwargs):
             hs = kwargs.get("hidden_states", args[0] if len(args) > 0 else None)
             if hs is None or not isinstance(hs, torch.Tensor):
@@ -330,10 +365,15 @@ def hf_get_tensor_dumps(
                 k_head_dim = k.shape[-1] // num_kv_heads
                 q_4d = q.view(q.shape[0], q.shape[1], num_heads, q_head_dim)
                 k_4d = k.view(q.shape[0], q.shape[1], num_kv_heads, k_head_dim)
-                qn = _sglang_style_qk_rmsnorm_fp32(q_4d, _module.q_norm.weight, _module.q_norm.variance_epsilon).reshape_as(q)
-                kn = _sglang_style_qk_rmsnorm_fp32(k_4d, _module.k_norm.weight, _module.k_norm.variance_epsilon).reshape_as(k)
-                _maybe_dump(f"{prefix}q_post_norm", _hf_slice(qn))
-                _maybe_dump(f"{prefix}k_post_norm", _hf_slice(kn))
+                qn, kn = _capture_norm_outputs(
+                    prefix=prefix,
+                    q=q,
+                    k=k,
+                    q_4d=q_4d,
+                    k_4d=k_4d,
+                    q_norm_module=_module.q_norm,
+                    k_norm_module=_module.k_norm,
+                )
 
                 position_embeddings = kwargs.get("position_embeddings")
                 if isinstance(position_embeddings, tuple) and len(position_embeddings) == 2:

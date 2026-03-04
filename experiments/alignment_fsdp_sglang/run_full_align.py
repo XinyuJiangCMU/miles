@@ -15,7 +15,7 @@ import requests
 
 from utils.dump_resolver import resolve_dump_dirs, resolve_indices
 from utils.run_manifest import now_stamp, write_json, write_text
-from utils.tensor_specs import ALL_COMPARE_NAMES, HF_NAME_OVERRIDE
+from utils.tensor_specs import ALL_COMPARE_NAMES, HF_NAME_OVERRIDE, SG_NAME_OVERRIDE
 
 
 def parse_args() -> argparse.Namespace:
@@ -244,7 +244,7 @@ def main() -> None:
         write_text(sg_dir_txt, str(sg_dir) + "\n")
 
         hf_indices = resolve_indices(hf_dir, ALL_COMPARE_NAMES, HF_NAME_OVERRIDE)
-        sg_indices = resolve_indices(sg_dir, ALL_COMPARE_NAMES, None)
+        sg_indices = resolve_indices(sg_dir, ALL_COMPARE_NAMES, SG_NAME_OVERRIDE)
         write_json(hf_index_json, hf_indices)
         write_json(sg_index_json, sg_indices)
 
