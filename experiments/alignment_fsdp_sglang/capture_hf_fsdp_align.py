@@ -196,6 +196,11 @@ def hf_get_tensor_dumps(
                 return output.float()
             return output
 
+        def _qk_norm_pre_fp32(_module, args):
+            if len(args) > 0 and isinstance(args[0], torch.Tensor):
+                return (args[0].float(),) + tuple(args[1:])
+            return None
+
         def _sglang_style_qk_rmsnorm_fp32(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
             x_fp32 = x.to(torch.float32)
             variance = x_fp32.pow(2).mean(dim=-1, keepdim=True)
@@ -274,6 +279,15 @@ def hf_get_tensor_dumps(
             new_args[0] = x
             return tuple(new_args), kwargs
 
+        def _linear_input_to_weight_dtype(_module, args, kwargs):
+            if len(args) == 0 or not isinstance(args[0], torch.Tensor):
+                return None
+            x = args[0]
+            target_dtype = _module.weight.dtype
+            if x.dtype != target_dtype:
+                x = x.to(target_dtype)
+            return (x,) + tuple(args[1:]), kwargs
+
         hook_handles = []
         first_layer = model.model.layers[0]
         last_layer = model.model.layers[-1]
@@ -286,8 +300,22 @@ def hf_get_tensor_dumps(
                     hook_handles.append(norm_mod.register_forward_hook(_norm_post_fp32, with_kwargs=True))
             if hasattr(layer, "self_attn"):
                 hook_handles.append(layer.self_attn.register_forward_pre_hook(_self_attn_pre_bf16, with_kwargs=True))
+                q_norm_mod = getattr(layer.self_attn, "q_norm", None)
+                if q_norm_mod is not None:
+                    hook_handles.append(q_norm_mod.register_forward_pre_hook(_qk_norm_pre_fp32))
+                k_norm_mod = getattr(layer.self_attn, "k_norm", None)
+                if k_norm_mod is not None:
+                    hook_handles.append(k_norm_mod.register_forward_pre_hook(_qk_norm_pre_fp32))
+                o_proj_mod = getattr(layer.self_attn, "o_proj", None)
+                if o_proj_mod is not None:
+                    hook_handles.append(o_proj_mod.register_forward_pre_hook(_linear_input_to_weight_dtype, with_kwargs=True))
             if hasattr(layer, "mlp"):
                 hook_handles.append(layer.mlp.register_forward_pre_hook(_mlp_pre_bf16, with_kwargs=True))
+
+        if hasattr(model, "lm_head") and hasattr(model.lm_head, "weight"):
+            hook_handles.append(
+                model.lm_head.register_forward_pre_hook(_linear_input_to_weight_dtype, with_kwargs=True)
+            )
 
         def _capture_layer0_raw(_module, args, kwargs):
             hs = kwargs.get("hidden_states", args[0] if len(args) > 0 else None)
