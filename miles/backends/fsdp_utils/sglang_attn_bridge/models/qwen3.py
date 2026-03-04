@@ -32,6 +32,7 @@ def qwen3_triton_forward(
     **kwargs,
 ):
     """Qwen3-like attention semantic path with unified extend kernel."""
+    hidden_states = hidden_states.to(torch.bfloat16)
     batch, seq_len, _ = hidden_states.shape
     head_dim = getattr(self, "head_dim", None)
     if head_dim is None and hasattr(self, "config"):
@@ -66,12 +67,18 @@ def qwen3_triton_forward(
     )
 
     if hasattr(self, "q_norm") and hasattr(self, "k_norm"):
-        q_by_head = query_states.reshape(-1, head_dim)
-        k_by_head = key_states.reshape(-1, head_dim)
+        # Match SGLang on-policy semantic order:
+        # q/k are normalized in fp32, then rotary is applied in fp32,
+        # and q/k are cast back to bf16 right before attention kernel.
+        q_by_head = query_states.reshape(-1, head_dim).float()
+        k_by_head = key_states.reshape(-1, head_dim).float()
         q_by_head = self.q_norm(q_by_head)
         k_by_head = self.k_norm(k_by_head)
-        query_states = q_by_head.view_as(query_states)
-        key_states = k_by_head.view_as(key_states)
+        query_states = q_by_head.view_as(query_states).float()
+        key_states = k_by_head.view_as(key_states).float()
+    else:
+        query_states = query_states.float()
+        key_states = key_states.float()
 
     query_states = query_states.view(batch, seq_len, num_heads, head_dim).transpose(1, 2)
     key_states = key_states.view(batch, seq_len, num_kv_heads, head_dim).transpose(1, 2)
@@ -81,6 +88,10 @@ def qwen3_triton_forward(
         query_states, key_states = APPLY_ROTARY_POS_EMB(
             query_states, key_states, cos, sin
         )
+
+    query_states = query_states.to(torch.bfloat16)
+    key_states = key_states.to(torch.bfloat16)
+    value_states = value_states.to(torch.bfloat16)
 
     total_tokens = batch * seq_len
     q_varlen = query_states.permute(0, 2, 1, 3).contiguous().view(
