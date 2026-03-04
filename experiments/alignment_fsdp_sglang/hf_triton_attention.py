@@ -22,6 +22,25 @@ import torch
 _extend_attention_fwd_unified = None
 
 
+def _maybe_get_dumper():
+    try:
+        return __import__("sglang.srt.debug_utils.dumper", fromlist=["dumper"]).dumper
+    except Exception:
+        return None
+
+
+_DUMPER = _maybe_get_dumper()
+
+
+def _maybe_dump(name: str, value) -> None:
+    if _DUMPER is None:
+        return
+    try:
+        _DUMPER.dump(name, value)
+    except Exception:
+        pass
+
+
 def _get_extend_attention_fwd_unified():
     global _extend_attention_fwd_unified
     if _extend_attention_fwd_unified is None:
@@ -66,6 +85,25 @@ def triton_attention_forward(
     kv_indptr = qo_indptr.clone()
     kv_indices = torch.arange(total_tokens, device=device, dtype=torch.int64)
     prefix_lens = torch.zeros(batch, device=device, dtype=torch.int32)
+    if getattr(module, "layer_idx", None) == 0:
+        _maybe_dump("hf_q_kernel_in", q)
+        _maybe_dump("hf_qo_indptr", qo_indptr)
+        _maybe_dump("hf_kv_indptr", kv_indptr)
+        _maybe_dump("hf_kv_indices", kv_indices)
+        _maybe_dump("hf_prefix_lens", prefix_lens)
+        _maybe_dump(
+            "hf_max_len_extend",
+            torch.tensor([seq_len], device=device, dtype=torch.int32),
+        )
+        _maybe_dump(
+            "hf_sm_scale",
+            torch.tensor(
+                [scaling if scaling is not None else 1.0 / (head_dim**0.5)],
+                device=device,
+                dtype=torch.float32,
+            ),
+        )
+        _maybe_dump("hf_is_causal", torch.tensor([1], device=device, dtype=torch.int32))
 
     extend_attention_fwd_unified(
         q,
