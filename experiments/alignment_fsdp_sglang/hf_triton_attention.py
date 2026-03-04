@@ -78,6 +78,9 @@ def triton_attention_forward(
     q = query.permute(0, 2, 1, 3).reshape(batch * seq_len, num_q_heads, head_dim).contiguous()
     k = key.permute(0, 2, 1, 3).reshape(batch * seq_len, num_kv_heads, head_dim).contiguous()
     v = value.permute(0, 2, 1, 3).reshape(batch * seq_len, num_kv_heads, head_dim).contiguous()
+    q = q.to(torch.bfloat16)
+    k = k.to(torch.bfloat16)
+    v = v.to(torch.bfloat16)
     out = torch.empty_like(q)
 
     total_tokens = batch * seq_len
@@ -87,6 +90,7 @@ def triton_attention_forward(
     prefix_lens = torch.zeros(batch, device=device, dtype=torch.int32)
     if getattr(module, "layer_idx", None) == 0:
         _maybe_dump("hf_q_kernel_in", q)
+        _maybe_dump("hf_v_kernel_in", v)
         _maybe_dump("hf_qo_indptr", qo_indptr)
         _maybe_dump("hf_kv_indptr", kv_indptr)
         _maybe_dump("hf_kv_indices", kv_indices)
