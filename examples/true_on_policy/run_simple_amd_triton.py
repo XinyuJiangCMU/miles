@@ -25,13 +25,16 @@ def execute():
         "--input-key messages "
         "--label-key label "
         "--apply-chat-template "
-        "--rollout-shuffle "
+        # Shuffle disabled in debug modes to simplify dump pairing
+        f"{'--rollout-shuffle ' if MODE == 'normal' else ''}"
         "--rm-type math "
         f"--num-rollout {2 if MODE == 'debug_one_sample' else 3000} "
         f"--rollout-batch-size {1 if MODE == 'debug_one_sample' else 32} "
         f"--n-samples-per-prompt {1 if MODE == 'debug_one_sample' else 8} "
         f"--rollout-max-response-len {2 if MODE == 'debug_one_sample' else 1024} "
         "--rollout-temperature 1 "
+        "--rollout-top-p 1.0 "
+        "--rollout-top-k 1 "
         # temp remove this to make test easier
         # "--over-sampling-batch-size 64 "
         # "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
@@ -68,12 +71,14 @@ def execute():
         "--adam-beta2 0.98 "
     )
 
+    _is_debug = MODE != "normal"
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-decode-log-interval 1000 "
         "--sglang-enable-metrics "
         f"--sglang-mem-fraction-static {0.2 if MODEL_NAME == 'Qwen3-4B' else 0.4} "
-        f"{'--sglang-disable-cuda-graph ' if MODE == 'debug_one_sample' else ''}"
+        # Debug: always disable cuda-graph and radix-cache, skip warmup for cleaner dumps
+        f"{'--sglang-disable-cuda-graph --sglang-disable-radix-cache --sglang-warmups 0 ' if _is_debug else ''}"
     )
 
     fsdp_args = (
@@ -138,6 +143,8 @@ def execute():
             "PYTHONPATH": "/data/true_on_policy/sglang/python:/data/true_on_policy/miles:/root/Megatron-LM",
             "SGLANG_DUMPER_ENABLE": "1" if MODE == "debug_one_sample" else "0",
             "SGLANG_TEMP_UTILS_ENABLE_DEBUG_PRINT": "1" if MODE == "debug_one_sample" else "0",
+            # Return pre-softmax logits from SGLang so logprob dtype matches training side
+            "SGLANG_RETURN_ORIGINAL_LOGPROB": "1",
         },
     )
 
