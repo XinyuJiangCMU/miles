@@ -173,6 +173,11 @@ class ExecutionPolicy:
     # o_proj and lm_head inputs are cast to match their weight dtype
     linear_to_weight_dtype: bool = True
 
+    # Each decoder layer receives fp32 hidden_states, so residual saves are fp32.
+    # residual (fp32) + attn_out (bf16) auto-upcasts to fp32 in PyTorch.
+    # This matches SG's fp32 residual stream.
+    residual_fp32: bool = False
+
     def summary(self) -> str:
         lines = ["[ExecutionPolicy]"]
         for k, v in self.__dict__.items():
@@ -252,6 +257,26 @@ def register_execution_policy_hooks(model, policy: ExecutionPolicy) -> list:
         for layer in model.model.layers:
             if hasattr(layer, "mlp"):
                 handles.append(layer.mlp.register_forward_pre_hook(_mlp_pre_bf16, with_kwargs=True))
+
+    # --- residual stream fp32 ---
+    # Pre-hook on each decoder layer: cast hidden_states to fp32 on entry.
+    # Effect: `residual = hidden_states` inside forward saves fp32.
+    # Then `residual + attn_out(bf16)` auto-upcasts to fp32 (PyTorch type promotion).
+    # The residual stream stays fp32 throughout, matching SG behavior.
+    if policy.residual_fp32:
+        def _layer_pre_fp32(_module, args, kwargs):
+            hs = kwargs.get("hidden_states", args[0] if args else None)
+            if hs is None or not isinstance(hs, torch.Tensor):
+                return None
+            hs = hs.float()
+            if "hidden_states" in kwargs:
+                return args, {**kwargs, "hidden_states": hs}
+            new_args = list(args)
+            new_args[0] = hs
+            return tuple(new_args), kwargs
+
+        for layer in model.model.layers:
+            handles.append(layer.register_forward_pre_hook(_layer_pre_fp32, with_kwargs=True))
 
     # --- linear input → weight dtype ---
     if policy.linear_to_weight_dtype:
@@ -501,7 +526,7 @@ def hf_get_tensor_dumps(
     policy: ExecutionPolicy | None = None,
 ) -> None:
     if policy is None:
-        policy = ExecutionPolicy()
+        policy = ExecutionPolicy(residual_fp32=True)
     print(policy.summary())
 
     from transformers import AttentionInterface
