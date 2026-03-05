@@ -574,7 +574,7 @@ def hf_get_tensor_dumps(
     policy: ExecutionPolicy | None = None,
 ) -> None:
     if policy is None:
-        policy = ExecutionPolicy(residual_fp32=True, block_out_bf16=True)
+        policy = ExecutionPolicy(residual_fp32=True, block_out_bf16=False)
     print(policy.summary())
 
     from transformers import AttentionInterface
