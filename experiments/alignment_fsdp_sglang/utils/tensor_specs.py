@@ -36,6 +36,35 @@ LAYER0_BLOCK_NAMES = [
     "layer0_block_out",
 ]
 
+# ── Layer 1 ──
+
+LAYER1_PREPARE_NAMES = [
+    "layer1_attn_input_raw",
+    "layer1_attn_input_after_prepare",
+    "layer1_hidden_in",
+]
+
+LAYER1_ATTN_NAMES = [
+    "layer1_q_pre_norm",
+    "layer1_k_pre_norm",
+    "layer1_v_pre_norm",
+    "layer1_q_post_norm",
+    "layer1_k_post_norm",
+    "layer1_q_post_rope",
+    "layer1_k_post_rope",
+    "layer1_attn_context_before_o_proj",
+    "layer1_attn_out",
+]
+
+LAYER1_BLOCK_NAMES = [
+    "layer1_residual",
+    "layer1_block_out_before_residual_add",
+    "layer1_block_out_after_residual_add",
+    "layer1_block_out",
+]
+
+# ── Last Layer ──
+
 LAST_LAYER_ATTN_NAMES = [
     "attn_input_last_layer",
     "q_pre_norm",
@@ -75,6 +104,9 @@ ALL_COMPARE_NAMES = (
     + LAYER0_PREPARE_NAMES
     + LAYER0_ATTN_NAMES
     + LAYER0_BLOCK_NAMES
+    + LAYER1_PREPARE_NAMES
+    + LAYER1_ATTN_NAMES
+    + LAYER1_BLOCK_NAMES
     + LAST_LAYER_ATTN_NAMES
     + LM_HEAD_NAMES
 )
@@ -82,6 +114,7 @@ ALL_COMPARE_NAMES = (
 FOCUS_TO_NAMES = {
     "full": ALL_COMPARE_NAMES,
     "layer0": INPUT_NAMES + LAYER0_PREPARE_NAMES + LAYER0_ATTN_NAMES + LAYER0_BLOCK_NAMES,
+    "layer1": LAYER1_PREPARE_NAMES + LAYER1_ATTN_NAMES + LAYER1_BLOCK_NAMES,
     "last_layer": LAST_LAYER_ATTN_NAMES + LM_HEAD_NAMES,
     "rope": ROPE_NAMES,
 }
@@ -91,6 +124,9 @@ SECTION_GROUPS = [
     ("== Layer 0 Prepare ==", LAYER0_PREPARE_NAMES),
     ("== Layer 0 Attention ==", LAYER0_ATTN_NAMES),
     ("== Layer 0 Residual / Block ==", LAYER0_BLOCK_NAMES),
+    ("== Layer 1 Prepare ==", LAYER1_PREPARE_NAMES),
+    ("== Layer 1 Attention ==", LAYER1_ATTN_NAMES),
+    ("== Layer 1 Residual / Block ==", LAYER1_BLOCK_NAMES),
     ("== Last Layer Attention ==", LAST_LAYER_ATTN_NAMES),
     ("== LM Head ==", LM_HEAD_NAMES),
 ]
@@ -119,6 +155,7 @@ HF_DROP_LAST_TOKEN_NAMES = {
 ALIGN_TO_SINGLE_STEP_DEFAULT = True
 
 ALIGN_NAMES = {
+    # layer 0
     "layer0_hidden_in",
     "layer0_q_pre_norm",
     "layer0_k_pre_norm",
@@ -137,6 +174,22 @@ ALIGN_NAMES = {
     "layer0_block_out_before_residual_add",
     "layer0_block_out_after_residual_add",
     "layer0_block_out",
+    # layer 1
+    "layer1_hidden_in",
+    "layer1_q_pre_norm",
+    "layer1_k_pre_norm",
+    "layer1_v_pre_norm",
+    "layer1_q_post_norm",
+    "layer1_k_post_norm",
+    "layer1_q_post_rope",
+    "layer1_k_post_rope",
+    "layer1_residual",
+    "layer1_attn_context_before_o_proj",
+    "layer1_attn_out",
+    "layer1_block_out_before_residual_add",
+    "layer1_block_out_after_residual_add",
+    "layer1_block_out",
+    # last layer
     "attn_input_last_layer",
     "q_pre_norm",
     "k_pre_norm",
@@ -163,6 +216,7 @@ SQUEEZE_BATCH1_NAMES = {
     "input_ids_for_compare",
     "embedding_output",
     "layer0_positions",
+    # layer 0
     "layer0_attn_input_raw",
     "layer0_attn_after_input_layernorm_only",
     "layer0_attn_input_after_prepare",
@@ -184,6 +238,24 @@ SQUEEZE_BATCH1_NAMES = {
     "layer0_block_out_before_residual_add",
     "layer0_block_out_after_residual_add",
     "layer0_block_out",
+    # layer 1
+    "layer1_attn_input_raw",
+    "layer1_attn_input_after_prepare",
+    "layer1_hidden_in",
+    "layer1_q_pre_norm",
+    "layer1_k_pre_norm",
+    "layer1_v_pre_norm",
+    "layer1_q_post_norm",
+    "layer1_k_post_norm",
+    "layer1_q_post_rope",
+    "layer1_k_post_rope",
+    "layer1_residual",
+    "layer1_attn_context_before_o_proj",
+    "layer1_attn_out",
+    "layer1_block_out_before_residual_add",
+    "layer1_block_out_after_residual_add",
+    "layer1_block_out",
+    # last layer
     "attn_input_last_layer",
     "q_pre_norm",
     "k_pre_norm",

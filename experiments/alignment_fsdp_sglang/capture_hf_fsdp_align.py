@@ -334,56 +334,89 @@ def register_execution_policy_hooks(model, policy: ExecutionPolicy) -> list:
 #     2. register_observer_posthooks()  – called after policy hooks
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _register_layer_observer_prehooks(handles, layer, hf_slice, prefix: str):
+    """Register pre-hook observers for a given layer with the given name prefix."""
+
+    # block raw input (before input_layernorm)
+    def _obs_block_input(_module, args, kwargs):
+        hs = kwargs.get("hidden_states", args[0] if args else None)
+        if hs is not None:
+            _dump(f"{prefix}_attn_input_raw", hf_slice(hs))
+
+    handles.append(layer.register_forward_pre_hook(_obs_block_input, with_kwargs=True))
+
+    # self_attn input BEFORE policy cast
+    def _obs_attn_pre_cast(_module, args, kwargs):
+        hs = kwargs.get("hidden_states", args[0] if args else None)
+        if hs is not None:
+            _dump(f"{prefix}_attn_input_after_prepare", hf_slice(hs))
+            _dump(f"{prefix}_hidden_in", hf_slice(hs.to(torch.bfloat16)))
+        return None
+
+    handles.append(layer.self_attn.register_forward_pre_hook(_obs_attn_pre_cast, with_kwargs=True))
+
+    # residual stream entering post_attention_layernorm
+    def _obs_residual(_module, args, kwargs):
+        x = args[0] if args and isinstance(args[0], torch.Tensor) else kwargs.get("hidden_states")
+        if x is not None:
+            _dump(f"{prefix}_residual", hf_slice(x))
+
+    if hasattr(layer, "post_attention_layernorm"):
+        handles.append(
+            layer.post_attention_layernorm.register_forward_pre_hook(
+                _obs_residual, with_kwargs=True
+            )
+        )
+
+    # context tensor entering o_proj
+    def _obs_pre_o_proj(_module, args, kwargs):
+        if args and isinstance(args[0], torch.Tensor):
+            _dump(f"{prefix}_attn_context_before_o_proj", hf_slice(args[0]))
+
+    if hasattr(layer.self_attn, "o_proj"):
+        handles.append(
+            layer.self_attn.o_proj.register_forward_pre_hook(
+                _obs_pre_o_proj, with_kwargs=True
+            )
+        )
+
+
 def register_observer_prehooks(model, hf_slice) -> list:
     """Pre-hook observers. Must be registered BEFORE execution policy hooks."""
     handles = []
-    layer0 = model.model.layers[0]
-
-    # layer0: full block raw input (before input_layernorm)
-    def _obs_layer0_block_input(_module, args, kwargs):
-        hs = kwargs.get("hidden_states", args[0] if args else None)
-        if hs is not None:
-            _dump("layer0_attn_input_raw", hf_slice(hs))
-
-    handles.append(layer0.register_forward_pre_hook(_obs_layer0_block_input, with_kwargs=True))
-
-    # layer0: self_attn input BEFORE policy cast (= fp32 from input_layernorm)
-    #         layer0_hidden_in is the explicit bf16 view of the same value
-    def _obs_layer0_attn_pre_cast(_module, args, kwargs):
-        hs = kwargs.get("hidden_states", args[0] if args else None)
-        if hs is not None:
-            _dump("layer0_attn_input_after_prepare", hf_slice(hs))
-            _dump("layer0_hidden_in", hf_slice(hs.to(torch.bfloat16)))
-        return None  # do not mutate
-
-    handles.append(layer0.self_attn.register_forward_pre_hook(_obs_layer0_attn_pre_cast, with_kwargs=True))
-
-    # layer0: residual stream entering post_attention_layernorm
-    def _obs_layer0_residual(_module, args, kwargs):
-        x = args[0] if args and isinstance(args[0], torch.Tensor) else kwargs.get("hidden_states")
-        if x is not None:
-            _dump("layer0_residual", hf_slice(x))
-
-    if hasattr(layer0, "post_attention_layernorm"):
-        handles.append(
-            layer0.post_attention_layernorm.register_forward_pre_hook(
-                _obs_layer0_residual, with_kwargs=True
-            )
-        )
-
-    # layer0: context tensor entering o_proj
-    def _obs_layer0_pre_o_proj(_module, args, kwargs):
-        if args and isinstance(args[0], torch.Tensor):
-            _dump("layer0_attn_context_before_o_proj", hf_slice(args[0]))
-
-    if hasattr(layer0.self_attn, "o_proj"):
-        handles.append(
-            layer0.self_attn.o_proj.register_forward_pre_hook(
-                _obs_layer0_pre_o_proj, with_kwargs=True
-            )
-        )
-
+    _register_layer_observer_prehooks(handles, model.model.layers[0], hf_slice, "layer0")
+    _register_layer_observer_prehooks(handles, model.model.layers[1], hf_slice, "layer1")
     return handles
+
+
+def _register_layer_observer_posthooks(handles, layer, hf_slice, prefix: str):
+    """Register post-hook observers for a given layer with the given name prefix."""
+
+    # attention module output (after o_proj)
+    def _obs_attn_out(_module, args, kwargs, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if out is not None:
+            _dump(f"{prefix}_attn_out", hf_slice(out))
+
+    handles.append(layer.self_attn.register_forward_hook(_obs_attn_out, with_kwargs=True))
+
+    # MLP output (= block delta before residual add)
+    def _obs_mlp_out(_module, args, kwargs, output):
+        out = output[0] if isinstance(output, tuple) else output
+        if out is not None:
+            _dump(f"{prefix}_block_out_before_residual_add", hf_slice(out))
+
+    if hasattr(layer, "mlp"):
+        handles.append(layer.mlp.register_forward_hook(_obs_mlp_out, with_kwargs=True))
+
+    # full block output (after residual add + optional block_out_bf16 cast)
+    def _obs_block_out(_module, args, kwargs, output):
+        hs = output[0] if isinstance(output, tuple) else output
+        if hs is not None:
+            _dump(f"{prefix}_block_out_after_residual_add", hf_slice(hs))
+            _dump(f"{prefix}_block_out", hf_slice(hs))
+
+    handles.append(layer.register_forward_hook(_obs_block_out, with_kwargs=True))
 
 
 def register_observer_posthooks(model, hf_slice) -> tuple[list, dict]:
@@ -393,36 +426,11 @@ def register_observer_posthooks(model, hf_slice) -> tuple[list, dict]:
     Returns (handles, last_attn_out_store).
     """
     handles = []
-    layer0 = model.model.layers[0]
-    last_layer = model.model.layers[-1]
-
-    # layer0: attention module output (after o_proj)
-    def _obs_layer0_attn_out(_module, args, kwargs, output):
-        out = output[0] if isinstance(output, tuple) else output
-        if out is not None:
-            _dump("layer0_attn_out", hf_slice(out))
-
-    handles.append(layer0.self_attn.register_forward_hook(_obs_layer0_attn_out, with_kwargs=True))
-
-    # layer0: MLP output (= block delta before residual add)
-    def _obs_layer0_mlp_out(_module, args, kwargs, output):
-        out = output[0] if isinstance(output, tuple) else output
-        if out is not None:
-            _dump("layer0_block_out_before_residual_add", hf_slice(out))
-
-    if hasattr(layer0, "mlp"):
-        handles.append(layer0.mlp.register_forward_hook(_obs_layer0_mlp_out, with_kwargs=True))
-
-    # layer0: full block output (after residual add + optional block_out_bf16 cast)
-    def _obs_layer0_block_out(_module, args, kwargs, output):
-        hs = output[0] if isinstance(output, tuple) else output
-        if hs is not None:
-            _dump("layer0_block_out_after_residual_add", hf_slice(hs))
-            _dump("layer0_block_out", hf_slice(hs))
-
-    handles.append(layer0.register_forward_hook(_obs_layer0_block_out, with_kwargs=True))
+    _register_layer_observer_posthooks(handles, model.model.layers[0], hf_slice, "layer0")
+    _register_layer_observer_posthooks(handles, model.model.layers[1], hf_slice, "layer1")
 
     # last layer: attn input + output (stored for post-forward dump)
+    last_layer = model.model.layers[-1]
     last_attn_out_store: dict[str, torch.Tensor] = {}
 
     def _obs_last_attn(_module, args, kwargs, output):
@@ -528,11 +536,18 @@ def register_reference_hooks(model, hf_slice) -> list:
     """Register reference-builder post-hooks. Returns handles."""
     handles = []
     layer0 = model.model.layers[0]
+    layer1 = model.model.layers[1]
     last_layer = model.model.layers[-1]
 
     handles.append(
         layer0.self_attn.register_forward_hook(
             lambda m, a, k, o: _build_attn_references("layer0_", hf_slice, m, a, k, o),
+            with_kwargs=True,
+        )
+    )
+    handles.append(
+        layer1.self_attn.register_forward_hook(
+            lambda m, a, k, o: _build_attn_references("layer1_", hf_slice, m, a, k, o),
             with_kwargs=True,
         )
     )

@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("/app/true_on_policy/miles/experiments/alignment_fsdp_sglang/configs/qwen3_0p6b_debug.json"),
     )
-    parser.add_argument("--focus", choices=["full", "layer0", "last_layer", "rope"], default="layer0")
+    parser.add_argument("--focus", choices=["full", "layer0", "layer1", "last_layer", "rope"], default="layer0")
     return parser.parse_args()
 
 
