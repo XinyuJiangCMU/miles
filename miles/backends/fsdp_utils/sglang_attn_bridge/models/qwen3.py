@@ -182,7 +182,9 @@ def qwen3_triton_forward(
     if is_last_layer:
         _maybe_dump("attn_context_before_o_proj", o.view(total_tokens, -1))
 
-    attn_output = o.view(batch, seq_len, num_heads, head_dim).transpose(1, 2)
+    # `o` is varlen output laid out as [B*S, H, D]. Restore to [B, S, H, D]
+    # then flatten heads -> hidden dim as [B, S, H*D] for `o_proj`.
+    attn_output = o.view(batch, seq_len, num_heads, head_dim)
     attn_output = attn_output.reshape(batch, seq_len, -1).contiguous()
     attn_output = self.o_proj(attn_output)
 
@@ -192,4 +194,3 @@ def qwen3_triton_forward(
         _maybe_dump("attn_out_last_layer", attn_output.view(total_tokens, -1))
 
     return attn_output, None
-
