@@ -167,10 +167,9 @@ class FSDPTrainRayActor(TrainRayActor):
             return AutoModelForCausalLM
 
     def _enable_true_on_policy_optimizations(self, args):
+        is_moe = getattr(self.hf_config, "num_experts", None) is not None
         if args.true_on_policy_mode:
             from sglang.srt.batch_invariant_ops import enable_batch_invariant_mode
-
-            from .models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
 
             logger.info("FSDPTrainRayActor call enable_batch_invariant_mode for true-on-policy")
             enable_batch_invariant_mode(
@@ -179,11 +178,15 @@ class FSDPTrainRayActor(TrainRayActor):
                 enable_bmm=False,
             )
 
-            apply_true_on_policy_patch_for_qwen3_moe()
-        else:
-            from .models.qwen3_moe_hf import apply_fsdp_moe_patch
+            if is_moe:
+                from .models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
 
-            apply_fsdp_moe_patch()
+                apply_true_on_policy_patch_for_qwen3_moe()
+        else:
+            if is_moe:
+                from .models.qwen3_moe_hf import apply_fsdp_moe_patch
+
+                apply_fsdp_moe_patch()
 
     def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):
         """Build HF model and optionally apply Triton attention bridge patch."""

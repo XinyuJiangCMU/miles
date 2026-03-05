@@ -4,6 +4,25 @@ import torch
 
 from ..hf_sglang_triton_patch import run_unified_extend
 
+_dumper = None
+
+
+def _maybe_dump(name: str, value: torch.Tensor) -> None:
+    """Mirror of ppo_utils._maybe_dump — lazily import sglang dumper."""
+    global _dumper
+    if _dumper is False:
+        return
+    if _dumper is None:
+        try:
+            _dumper = __import__(
+                "sglang.srt.debug_utils.dumper",
+                fromlist=["dumper"],
+            ).dumper
+        except Exception:
+            _dumper = False
+            return
+    _dumper.dump(name, value)
+
 
 def _resolve_rotary():
     try:
@@ -57,14 +76,34 @@ def qwen3_triton_forward(
             self.config, "num_key_value_heads", self.k_proj.out_features // head_dim
         )
 
+    # Determine layer position for selective dumping (mirrors SGLang qwen3.py logic).
+    layer_id = getattr(self, "layer_idx", None)
+    num_hidden_layers = getattr(getattr(self, "config", None), "num_hidden_layers", None)
+    is_layer0 = layer_id == 0
+    is_last_layer = (
+        layer_id is not None
+        and num_hidden_layers is not None
+        and layer_id == num_hidden_layers - 1
+    )
+
+    total_tokens = batch * seq_len
+
     # SGLang Qwen3 semantic order: qkv -> qk_norm -> rope -> attention core -> o_proj.
     query_states = self.q_proj(hidden_states)
     key_states = self.k_proj(hidden_states)
-    value_states = (
-        self.v_proj(hidden_states)
-        .view(batch, seq_len, num_kv_heads, head_dim)
-        .transpose(1, 2)
-    )
+    # Split v_proj output before in-place reshape to allow dumping [T, kv_size].
+    v_raw = self.v_proj(hidden_states)
+
+    if is_layer0:
+        _maybe_dump("layer0_q_pre_norm", query_states.view(total_tokens, -1))
+        _maybe_dump("layer0_k_pre_norm", key_states.view(total_tokens, -1))
+        _maybe_dump("layer0_v_pre_norm", v_raw.view(total_tokens, -1))
+    if is_last_layer:
+        _maybe_dump("q_pre_norm", query_states.view(total_tokens, -1))
+        _maybe_dump("k_pre_norm", key_states.view(total_tokens, -1))
+        _maybe_dump("v_pre_norm", v_raw.view(total_tokens, -1))
+
+    value_states = v_raw.view(batch, seq_len, num_kv_heads, head_dim).transpose(1, 2)
 
     if hasattr(self, "q_norm") and hasattr(self, "k_norm"):
         # Match SGLang on-policy semantic order:
@@ -80,6 +119,13 @@ def qwen3_triton_forward(
         query_states = query_states.float()
         key_states = key_states.float()
 
+    if is_layer0:
+        _maybe_dump("layer0_q_post_norm", query_states.view(total_tokens, -1))
+        _maybe_dump("layer0_k_post_norm", key_states.view(total_tokens, -1))
+    if is_last_layer:
+        _maybe_dump("q_post_norm", query_states.view(total_tokens, -1))
+        _maybe_dump("k_post_norm", key_states.view(total_tokens, -1))
+
     query_states = query_states.view(batch, seq_len, num_heads, head_dim).transpose(1, 2)
     key_states = key_states.view(batch, seq_len, num_kv_heads, head_dim).transpose(1, 2)
 
@@ -89,11 +135,30 @@ def qwen3_triton_forward(
             query_states, key_states, cos, sin
         )
 
+    # Dump post-rope in [T, q_size] / [T, kv_size] to match SGLang's varlen format.
+    if is_layer0:
+        _maybe_dump(
+            "layer0_q_post_rope",
+            query_states.permute(0, 2, 1, 3).contiguous().view(total_tokens, -1),
+        )
+        _maybe_dump(
+            "layer0_k_post_rope",
+            key_states.permute(0, 2, 1, 3).contiguous().view(total_tokens, -1),
+        )
+    if is_last_layer:
+        _maybe_dump(
+            "q_post_rope",
+            query_states.permute(0, 2, 1, 3).contiguous().view(total_tokens, -1),
+        )
+        _maybe_dump(
+            "k_post_rope",
+            key_states.permute(0, 2, 1, 3).contiguous().view(total_tokens, -1),
+        )
+
     query_states = query_states.to(torch.bfloat16)
     key_states = key_states.to(torch.bfloat16)
     value_states = value_states.to(torch.bfloat16)
 
-    total_tokens = batch * seq_len
     q_varlen = query_states.permute(0, 2, 1, 3).contiguous().view(
         total_tokens, num_heads, head_dim
     )
@@ -112,8 +177,19 @@ def qwen3_triton_forward(
         seq_len=seq_len,
     )
 
+    if is_layer0:
+        _maybe_dump("layer0_attn_context_before_o_proj", o.view(total_tokens, -1))
+    if is_last_layer:
+        _maybe_dump("attn_context_before_o_proj", o.view(total_tokens, -1))
+
     attn_output = o.view(batch, seq_len, num_heads, head_dim).transpose(1, 2)
     attn_output = attn_output.reshape(batch, seq_len, -1).contiguous()
     attn_output = self.o_proj(attn_output)
+
+    if is_layer0:
+        _maybe_dump("layer0_attn_out_after_o_proj", attn_output.view(total_tokens, -1))
+    if is_last_layer:
+        _maybe_dump("attn_out_last_layer", attn_output.view(total_tokens, -1))
+
     return attn_output, None
 
