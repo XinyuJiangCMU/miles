@@ -178,6 +178,10 @@ class ExecutionPolicy:
     # This matches SG's fp32 residual stream.
     residual_fp32: bool = False
 
+    # Each decoder layer output is cast back to bf16 after the final residual add.
+    # SG keeps the block output in bf16; without this, residual_fp32 leaves it fp32.
+    block_out_bf16: bool = False
+
     def summary(self) -> str:
         lines = ["[ExecutionPolicy]"]
         for k, v in self.__dict__.items():
@@ -278,6 +282,21 @@ def register_execution_policy_hooks(model, policy: ExecutionPolicy) -> list:
         for layer in model.model.layers:
             handles.append(layer.register_forward_pre_hook(_layer_pre_fp32, with_kwargs=True))
 
+    # --- block output bf16 ---
+    # Post-hook on each decoder layer: cast block output back to bf16.
+    # Must be registered BEFORE observer post-hooks so the observer sees bf16.
+    # (Observer pre-hooks are registered before policy; observer post-hooks after.)
+    if policy.block_out_bf16:
+        def _layer_post_bf16(_module, args, kwargs, output):
+            hs = output[0] if isinstance(output, tuple) else output
+            if isinstance(hs, torch.Tensor) and hs.dtype != torch.bfloat16:
+                hs = hs.to(torch.bfloat16)
+                return (hs,) + output[1:] if isinstance(output, tuple) else hs
+            return output
+
+        for layer in model.model.layers:
+            handles.append(layer.register_forward_hook(_layer_post_bf16, with_kwargs=True))
+
     # --- linear input → weight dtype ---
     if policy.linear_to_weight_dtype:
         def _linear_to_weight_dtype(_module, args, kwargs):
@@ -302,22 +321,25 @@ def register_execution_policy_hooks(model, policy: ExecutionPolicy) -> list:
 # §4  Observers
 #
 #   Read-only hooks: dump real forward values, NEVER mutate tensors.
-#   Must be registered BEFORE execution policy hooks so that pre-hooks here
-#   see the pre-mutation state (e.g. fp32 from layernorm before attn_input
-#   is cast to bf16).
+#
+#   Registration order matters for correctness:
+#     - Pre-hooks:  observers BEFORE policy  → see pre-mutation state
+#       e.g. layer0_attn_input_after_prepare must see fp32 before attn_input_bf16 casts it
+#     - Post-hooks: policy BEFORE observers  → see post-mutation state
+#       e.g. layer0_block_out must see bf16 after block_out_bf16 casts it
+#
+#   Therefore observers are split into two functions called at different points
+#   in hf_get_tensor_dumps:
+#     1. register_observer_prehooks()   – called before policy hooks
+#     2. register_observer_posthooks()  – called after policy hooks
 # ─────────────────────────────────────────────────────────────────────────────
 
-def register_observer_hooks(model, hf_slice) -> tuple[list, dict]:
-    """
-    Register all non-mutating dump/probe hooks.
-    Returns (handles, last_attn_out_store).
-    last_attn_out_store["value"] is populated during forward for post-forward dump.
-    """
+def register_observer_prehooks(model, hf_slice) -> list:
+    """Pre-hook observers. Must be registered BEFORE execution policy hooks."""
     handles = []
     layer0 = model.model.layers[0]
-    last_layer = model.model.layers[-1]
 
-    # layer0: full block raw input (before input_layernorm; whatever dtype arrives here)
+    # layer0: full block raw input (before input_layernorm)
     def _obs_layer0_block_input(_module, args, kwargs):
         hs = kwargs.get("hidden_states", args[0] if args else None)
         if hs is not None:
@@ -325,20 +347,18 @@ def register_observer_hooks(model, hf_slice) -> tuple[list, dict]:
 
     handles.append(layer0.register_forward_pre_hook(_obs_layer0_block_input, with_kwargs=True))
 
-    # layer0: self_attn input BEFORE policy cast (= fp32 output of input_layernorm)
-    #         and the explicit bf16 view (what the attn kernel actually sees)
-    # NOTE: registered before execution policy hooks so this sees the pre-cast value.
+    # layer0: self_attn input BEFORE policy cast (= fp32 from input_layernorm)
+    #         layer0_hidden_in is the explicit bf16 view of the same value
     def _obs_layer0_attn_pre_cast(_module, args, kwargs):
         hs = kwargs.get("hidden_states", args[0] if args else None)
         if hs is not None:
-            _dump("layer0_attn_input_after_prepare", hf_slice(hs))            # explicit bf16 cast so compare can verify what the kernel receives
+            _dump("layer0_attn_input_after_prepare", hf_slice(hs))
             _dump("layer0_hidden_in", hf_slice(hs.to(torch.bfloat16)))
         return None  # do not mutate
 
     handles.append(layer0.self_attn.register_forward_pre_hook(_obs_layer0_attn_pre_cast, with_kwargs=True))
 
     # layer0: residual stream entering post_attention_layernorm
-    #         (= hidden state after attn residual add, before MLP norm)
     def _obs_layer0_residual(_module, args, kwargs):
         x = args[0] if args and isinstance(args[0], torch.Tensor) else kwargs.get("hidden_states")
         if x is not None:
@@ -351,7 +371,7 @@ def register_observer_hooks(model, hf_slice) -> tuple[list, dict]:
             )
         )
 
-    # layer0: context tensor entering o_proj (= attention output before projection)
+    # layer0: context tensor entering o_proj
     def _obs_layer0_pre_o_proj(_module, args, kwargs):
         if args and isinstance(args[0], torch.Tensor):
             _dump("layer0_attn_context_before_o_proj", hf_slice(args[0]))
@@ -362,6 +382,19 @@ def register_observer_hooks(model, hf_slice) -> tuple[list, dict]:
                 _obs_layer0_pre_o_proj, with_kwargs=True
             )
         )
+
+    return handles
+
+
+def register_observer_posthooks(model, hf_slice) -> tuple[list, dict]:
+    """
+    Post-hook observers. Must be registered AFTER execution policy hooks so they
+    see the post-mutation output (e.g. block_out already cast to bf16).
+    Returns (handles, last_attn_out_store).
+    """
+    handles = []
+    layer0 = model.model.layers[0]
+    last_layer = model.model.layers[-1]
 
     # layer0: attention module output (after o_proj)
     def _obs_layer0_attn_out(_module, args, kwargs, output):
@@ -380,7 +413,7 @@ def register_observer_hooks(model, hf_slice) -> tuple[list, dict]:
     if hasattr(layer0, "mlp"):
         handles.append(layer0.mlp.register_forward_hook(_obs_layer0_mlp_out, with_kwargs=True))
 
-    # layer0: full block output (after residual add = input to layer1)
+    # layer0: full block output (after residual add + optional block_out_bf16 cast)
     def _obs_layer0_block_out(_module, args, kwargs, output):
         hs = output[0] if isinstance(output, tuple) else output
         if hs is not None:
@@ -526,7 +559,7 @@ def hf_get_tensor_dumps(
     policy: ExecutionPolicy | None = None,
 ) -> None:
     if policy is None:
-        policy = ExecutionPolicy(residual_fp32=True)
+        policy = ExecutionPolicy(residual_fp32=True, block_out_bf16=True)
     print(policy.summary())
 
     from transformers import AttentionInterface
@@ -562,14 +595,17 @@ def hf_get_tensor_dumps(
 
         all_handles: list = []
 
-        # §4 observers first – must see pre-mutation state for pre-hooks
-        obs_handles, last_attn_out_store = register_observer_hooks(model, hf_slice)
-        all_handles += obs_handles
+        # §4a observer pre-hooks – see pre-mutation state (e.g. fp32 before attn bf16 cast)
+        all_handles += register_observer_prehooks(model, hf_slice)
 
-        # §3 execution policy – mutating hooks run after observer pre-hooks
+        # §3 execution policy – mutating pre+post hooks
         all_handles += register_execution_policy_hooks(model, policy)
 
-        # §5 reference builders – post-hooks, ordering relative to observers doesn't matter
+        # §4b observer post-hooks – see post-mutation state (e.g. bf16 after block_out cast)
+        obs_post_handles, last_attn_out_store = register_observer_posthooks(model, hf_slice)
+        all_handles += obs_post_handles
+
+        # §5 reference builders – post-hooks, run after forward regardless of order
         all_handles += register_reference_hooks(model, hf_slice)
 
         with torch.no_grad():

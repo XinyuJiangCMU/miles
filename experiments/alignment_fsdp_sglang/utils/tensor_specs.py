@@ -155,6 +155,10 @@ ALIGN_NAMES = {
     "next_token_logits_raw",
 }
 
+# next_token_logits_raw is NOT in SQUEEZE_BATCH1_NAMES:
+# HF=(1,14,vocab) → align takes x[:,−1,:] → (1,vocab)
+# SG=(1,vocab) → no align needed → (1,vocab)
+# If squeezed, SG becomes (vocab,) [1D] which breaks shape matching.
 SQUEEZE_BATCH1_NAMES = {
     "input_ids_for_compare",
     "embedding_output",
@@ -195,5 +199,4 @@ SQUEEZE_BATCH1_NAMES = {
     "attn_context_before_o_proj",
     "attn_out_last_layer",
     "final_hidden_before_lm_head",
-    "next_token_logits_raw",
 }
