@@ -41,7 +41,20 @@ def _dump_view(x: torch.Tensor) -> torch.Tensor:
 def _flat_last_dim(x: torch.Tensor) -> torch.Tensor:
     if x.ndim <= 1:
         return x.contiguous().view(-1)
-    return x.contiguous().view(-1, x.shape[-1])
+    if x.ndim == 2:
+        return x.contiguous()
+    if x.ndim == 3:
+        # [B, S, H] -> [B*S, H]
+        return x.contiguous().view(-1, x.shape[-1])
+    if x.ndim == 4:
+        # Normalize to [B, S, H, D], then flatten to [B*S, H*D].
+        # q/k norm tensors are typically [B, H, S, D] in HF attention internals.
+        if x.shape[1] <= x.shape[2]:
+            y = x.permute(0, 2, 1, 3).contiguous()
+        else:
+            y = x.contiguous()
+        return y.view(y.shape[0] * y.shape[1], y.shape[2] * y.shape[3])
+    return x.contiguous().view(x.shape[0], -1)
 
 
 def _maybe_dump(name: str, value: torch.Tensor) -> None:
