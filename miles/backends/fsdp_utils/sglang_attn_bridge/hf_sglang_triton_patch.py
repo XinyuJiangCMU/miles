@@ -342,19 +342,12 @@ def apply_sglang_triton_attention_patch(model):
     """Register SGLang Triton as attention backend and activate it on the model.
 
     Uses HF's ALL_ATTENTION_FUNCTIONS registry — no monkey-patching of forward methods.
-    Also registers ExecutionPolicy dtype hooks to align HF's dtype flow with SGLang's.
+    SGLang's dtype flow now matches HF's native bf16 flow, so no ExecutionPolicy hooks needed.
     """
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
-    from .execution_policy import ExecutionPolicy, register_execution_policy_hooks
 
     ALL_ATTENTION_FUNCTIONS["sglang_triton"] = _sglang_triton_attention
     model.config._attn_implementation = "sglang_triton"
-
-    # Register dtype mutation hooks BEFORE dump hooks so observers see correct dtypes
-    # residual_fp32=True matches SGLang's fp32_residual: keeps residual stream in fp32
-    # so residual(fp32) + attn_out(bf16) → fp32, matching SGLang's precision
-    policy = ExecutionPolicy(residual_fp32=True)
-    register_execution_policy_hooks(model, policy)
 
     _register_norm_dump_hooks(model)
     _register_layer_observer_dump_hooks(model)
