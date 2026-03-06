@@ -31,7 +31,7 @@ def execute():
         f"--num-rollout {2 if MODE == 'debug_one_sample' else 3000} "
         f"--rollout-batch-size {1 if MODE == 'debug_one_sample' else 32} "
         f"--n-samples-per-prompt {1 if MODE == 'debug_one_sample' else 8} "
-        f"--rollout-max-response-len {2 if MODE == 'debug_one_sample' else 1024} "
+        f"--rollout-max-response-len {1 if MODE == 'debug_one_sample' else 1024} "
         "--rollout-temperature 1 "
         "--rollout-top-p 1.0 "
         "--rollout-top-k 1 "
