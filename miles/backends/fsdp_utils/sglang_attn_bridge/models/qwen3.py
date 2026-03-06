@@ -1,10 +1,36 @@
 """Qwen3 semantic adapter for the SGLang Triton HF patch path."""
 
+import os
 import torch
 
 from ..hf_sglang_triton_patch import run_unified_extend
 
 _dumper = None
+_DUMP_CAST_MODE = os.environ.get("MILES_BRIDGE_DUMP_CAST_DTYPE", "none").strip().lower()
+_DUMP_CAST_DTYPE_MAP = {
+    "none": None,
+    "fp32": torch.float32,
+    "bf16": torch.bfloat16,
+}
+if _DUMP_CAST_MODE not in _DUMP_CAST_DTYPE_MAP:
+    raise ValueError(
+        f"Invalid MILES_BRIDGE_DUMP_CAST_DTYPE={_DUMP_CAST_MODE!r}, "
+        "expected one of: none, fp32, bf16"
+    )
+_DUMP_CAST_DTYPE = _DUMP_CAST_DTYPE_MAP[_DUMP_CAST_MODE]
+_SUPPORTED_UNIFIED_EXTEND_DTYPES = {
+    torch.bfloat16,
+    torch.float16,
+    torch.float32,
+}
+
+
+def _dump_ready(value: torch.Tensor) -> torch.Tensor:
+    """Prepare a detached tensor for dump; optional cast affects dump only."""
+    x = value.detach()
+    if _DUMP_CAST_DTYPE is not None:
+        x = x.to(_DUMP_CAST_DTYPE)
+    return x
 
 
 def _maybe_dump(name: str, value: torch.Tensor) -> None:
@@ -21,7 +47,7 @@ def _maybe_dump(name: str, value: torch.Tensor) -> None:
         except Exception:
             _dumper = False
             return
-    _dumper.dump(name, value)
+    _dumper.dump(name, _dump_ready(value))
 
 
 def _resolve_rotary():
@@ -51,7 +77,6 @@ def qwen3_triton_forward(
     **kwargs,
 ):
     """Qwen3-like attention semantic path with unified extend kernel."""
-    hidden_states = hidden_states.to(torch.bfloat16)
     batch, seq_len, _ = hidden_states.shape
     head_dim = getattr(self, "head_dim", None)
     if head_dim is None and hasattr(self, "config"):
@@ -87,47 +112,49 @@ def qwen3_triton_forward(
     )
 
     total_tokens = batch * seq_len
+    input_shape = hidden_states.shape[:-1]
+    hidden_shape = (*input_shape, -1, head_dim)
 
     # SGLang Qwen3 semantic order: qkv -> qk_norm -> rope -> attention core -> o_proj.
-    query_states = self.q_proj(hidden_states)
-    key_states = self.k_proj(hidden_states)
-    # Split v_proj output before in-place reshape to allow dumping [T, kv_size].
-    v_raw = self.v_proj(hidden_states)
+    query_proj = self.q_proj(hidden_states)
+    key_proj = self.k_proj(hidden_states)
+    value_proj = self.v_proj(hidden_states)
 
     if is_layer0:
-        _maybe_dump("layer0_q_pre_norm", query_states.view(total_tokens, -1))
-        _maybe_dump("layer0_k_pre_norm", key_states.view(total_tokens, -1))
-        _maybe_dump("layer0_v_pre_norm", v_raw.view(total_tokens, -1))
+        _maybe_dump("layer0_q_pre_norm", query_proj.reshape(total_tokens, -1))
+        _maybe_dump("layer0_k_pre_norm", key_proj.reshape(total_tokens, -1))
+        _maybe_dump("layer0_v_pre_norm", value_proj.reshape(total_tokens, -1))
     if is_last_layer:
-        _maybe_dump("q_pre_norm", query_states.view(total_tokens, -1))
-        _maybe_dump("k_pre_norm", key_states.view(total_tokens, -1))
-        _maybe_dump("v_pre_norm", v_raw.view(total_tokens, -1))
-
-    value_states = v_raw.view(batch, seq_len, num_kv_heads, head_dim).transpose(1, 2)
+        _maybe_dump("q_pre_norm", query_proj.reshape(total_tokens, -1))
+        _maybe_dump("k_pre_norm", key_proj.reshape(total_tokens, -1))
+        _maybe_dump("v_pre_norm", value_proj.reshape(total_tokens, -1))
 
     if hasattr(self, "q_norm") and hasattr(self, "k_norm"):
-        # Match SGLang on-policy semantic order:
-        # q/k are normalized in fp32, then rotary is applied in fp32,
-        # and q/k are cast back to bf16 right before attention kernel.
-        q_by_head = query_states.reshape(-1, head_dim).float()
-        k_by_head = key_states.reshape(-1, head_dim).float()
-        q_by_head = self.q_norm(q_by_head)
-        k_by_head = self.k_norm(k_by_head)
-        query_states = q_by_head.view_as(query_states).float()
-        key_states = k_by_head.view_as(key_states).float()
+        query_states = self.q_norm(query_proj.view(hidden_shape)).transpose(1, 2)
+        key_states = self.k_norm(key_proj.view(hidden_shape)).transpose(1, 2)
     else:
-        query_states = query_states.float()
-        key_states = key_states.float()
+        query_states = query_proj.view(batch, seq_len, num_heads, head_dim).transpose(1, 2)
+        key_states = key_proj.view(batch, seq_len, num_kv_heads, head_dim).transpose(1, 2)
+    value_states = value_proj.view(batch, seq_len, num_kv_heads, head_dim).transpose(1, 2)
 
     if is_layer0:
-        _maybe_dump("layer0_q_post_norm", query_states.view(total_tokens, -1))
-        _maybe_dump("layer0_k_post_norm", key_states.view(total_tokens, -1))
+        _maybe_dump(
+            "layer0_q_post_norm",
+            query_states.permute(0, 2, 1, 3).contiguous().view(total_tokens, -1),
+        )
+        _maybe_dump(
+            "layer0_k_post_norm",
+            key_states.permute(0, 2, 1, 3).contiguous().view(total_tokens, -1),
+        )
     if is_last_layer:
-        _maybe_dump("q_post_norm", query_states.view(total_tokens, -1))
-        _maybe_dump("k_post_norm", key_states.view(total_tokens, -1))
-
-    query_states = query_states.view(batch, seq_len, num_heads, head_dim).transpose(1, 2)
-    key_states = key_states.view(batch, seq_len, num_kv_heads, head_dim).transpose(1, 2)
+        _maybe_dump(
+            "q_post_norm",
+            query_states.permute(0, 2, 1, 3).contiguous().view(total_tokens, -1),
+        )
+        _maybe_dump(
+            "k_post_norm",
+            key_states.permute(0, 2, 1, 3).contiguous().view(total_tokens, -1),
+        )
 
     if position_embeddings is not None and APPLY_ROTARY_POS_EMB is not None:
         cos, sin = position_embeddings
@@ -155,9 +182,16 @@ def qwen3_triton_forward(
             key_states.permute(0, 2, 1, 3).contiguous().view(total_tokens, -1),
         )
 
-    query_states = query_states.to(torch.bfloat16)
-    key_states = key_states.to(torch.bfloat16)
-    value_states = value_states.to(torch.bfloat16)
+    for name, t in (
+        ("q", query_states),
+        ("k", key_states),
+        ("v", value_states),
+    ):
+        if t.dtype not in _SUPPORTED_UNIFIED_EXTEND_DTYPES:
+            raise TypeError(
+                f"extend_unified unsupported {name} dtype={t.dtype}; "
+                f"supported={sorted(map(str, _SUPPORTED_UNIFIED_EXTEND_DTYPES))}"
+            )
 
     q_varlen = query_states.permute(0, 2, 1, 3).contiguous().view(
         total_tokens, num_heads, head_dim
