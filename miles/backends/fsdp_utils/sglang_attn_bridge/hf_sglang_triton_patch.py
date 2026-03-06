@@ -114,6 +114,133 @@ def _register_norm_dump_hooks(model) -> int:
     return hook_count
 
 
+def _get_hidden_states(args, kwargs):
+    if kwargs is not None and "hidden_states" in kwargs and isinstance(kwargs["hidden_states"], torch.Tensor):
+        return kwargs["hidden_states"]
+    if args and isinstance(args[0], torch.Tensor):
+        return args[0]
+    return None
+
+
+def _register_layer_observer_dump_hooks(model) -> int:
+    """Register read-only observers that mirror old alignment capture names."""
+    layers = getattr(getattr(model, "model", None), "layers", None)
+    if not layers:
+        return 0
+
+    count = 0
+    targets = []
+    if len(layers) > 0:
+        targets.append(("layer0", layers[0]))
+    if len(layers) > 1:
+        targets.append(("layer1", layers[1]))
+
+    for prefix, layer in targets:
+        if getattr(layer, "_miles_observer_dump_hooks_registered", False):
+            continue
+
+        # block raw input (before input_layernorm)
+        def _obs_block_input(_module, args, kwargs, p=prefix):
+            hs = _get_hidden_states(args, kwargs)
+            if hs is not None:
+                _maybe_dump(f"{p}_attn_input_raw", _flat_last_dim(hs))
+
+        layer.register_forward_pre_hook(_obs_block_input, with_kwargs=True)
+        count += 1
+
+        # input_layernorm output: "after_input_layernorm_only"
+        input_ln = getattr(layer, "input_layernorm", None)
+        if input_ln is not None:
+            def _obs_input_ln_out(_module, _args, _kwargs, output, p=prefix):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    _maybe_dump(f"{p}_attn_after_input_layernorm_only", _flat_last_dim(out))
+
+            input_ln.register_forward_hook(_obs_input_ln_out, with_kwargs=True)
+            count += 1
+
+        attn = getattr(layer, "self_attn", None)
+        if attn is not None:
+            # self_attn input after decoder-layer prepare path
+            def _obs_attn_pre(_module, args, kwargs, p=prefix):
+                hs = _get_hidden_states(args, kwargs)
+                if hs is not None:
+                    flat = _flat_last_dim(hs)
+                    _maybe_dump(f"{p}_attn_input_after_prepare", flat)
+                    _maybe_dump(f"{p}_hidden_in", flat)
+
+            attn.register_forward_pre_hook(_obs_attn_pre, with_kwargs=True)
+            count += 1
+
+            # attention output after o_proj
+            def _obs_attn_out(_module, _args, _kwargs, output, p=prefix):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    if p == "layer0":
+                        _maybe_dump("layer0_attn_out_after_o_proj", _flat_last_dim(out))
+                    if p == "layer1":
+                        _maybe_dump("layer1_attn_out_after_o_proj", _flat_last_dim(out))
+
+            attn.register_forward_hook(_obs_attn_out, with_kwargs=True)
+            count += 1
+
+        # residual stream entering post_attention_layernorm
+        post_ln = getattr(layer, "post_attention_layernorm", None)
+        if post_ln is not None:
+            def _obs_residual(_module, args, kwargs, p=prefix):
+                x = _get_hidden_states(args, kwargs)
+                if x is not None:
+                    _maybe_dump(f"{p}_residual", _flat_last_dim(x))
+
+            post_ln.register_forward_pre_hook(_obs_residual, with_kwargs=True)
+            count += 1
+
+        # MLP output (= block delta before residual add)
+        mlp = getattr(layer, "mlp", None)
+        if mlp is not None:
+            def _obs_mlp_out(_module, _args, _kwargs, output, p=prefix):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    _maybe_dump(f"{p}_block_out_before_residual_add", _flat_last_dim(out))
+
+            mlp.register_forward_hook(_obs_mlp_out, with_kwargs=True)
+            count += 1
+
+        # full block output (after residual add)
+        def _obs_block_out(_module, _args, _kwargs, output, p=prefix):
+            hs = output[0] if isinstance(output, tuple) else output
+            if isinstance(hs, torch.Tensor):
+                flat = _flat_last_dim(hs)
+                _maybe_dump(f"{p}_block_out_after_residual_add", flat)
+                _maybe_dump(f"{p}_block_out", flat)
+
+        layer.register_forward_hook(_obs_block_out, with_kwargs=True)
+        count += 1
+        layer._miles_observer_dump_hooks_registered = True
+
+    # Last layer observers
+    last_layer = layers[-1]
+    if not getattr(last_layer, "_miles_last_layer_dump_hooks_registered", False):
+        last_attn = getattr(last_layer, "self_attn", None)
+        if last_attn is not None:
+            def _obs_last_attn_pre(_module, args, kwargs):
+                hs = _get_hidden_states(args, kwargs)
+                if hs is not None:
+                    _maybe_dump("attn_input_last_layer", _flat_last_dim(hs))
+
+            def _obs_last_attn_out(_module, _args, _kwargs, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                    _maybe_dump("attn_out_last_layer", _flat_last_dim(out))
+
+            last_attn.register_forward_pre_hook(_obs_last_attn_pre, with_kwargs=True)
+            last_attn.register_forward_hook(_obs_last_attn_out, with_kwargs=True)
+            count += 2
+        last_layer._miles_last_layer_dump_hooks_registered = True
+
+    return count
+
+
 def _sglang_triton_attention(
     module,
     query: torch.Tensor,
@@ -209,6 +336,7 @@ def apply_sglang_triton_attention_patch(model):
     ALL_ATTENTION_FUNCTIONS["sglang_triton"] = _sglang_triton_attention
     model.config._attn_implementation = "sglang_triton"
     _register_norm_dump_hooks(model)
+    _register_layer_observer_dump_hooks(model)
 
     patched = sum(
         1
