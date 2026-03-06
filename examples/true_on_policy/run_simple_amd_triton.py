@@ -1,5 +1,12 @@
 import os
+import sys
+from pathlib import Path
 
+
+# Ensure this script always imports the in-repo miles package under /app.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import miles.utils.external_utils.command_utils as U
 
@@ -140,7 +147,7 @@ def execute():
         megatron_model_type=None,
         extra_env_vars={
             **true_on_policy_envs,
-            "PYTHONPATH": "/data/true_on_policy/sglang/python:/data/true_on_policy/miles:/root/Megatron-LM",
+            "PYTHONPATH": "/app/sglang/python:/app/true_on_policy/miles:/root/Megatron-LM",
             "SGLANG_DUMPER_ENABLE": "1" if MODE == "debug_one_sample" else "0",
             "SGLANG_DUMPER_DIR": "/app/true_on_policy/results/amd_triton_dumps",
             "SGLANG_TEMP_UTILS_ENABLE_DEBUG_PRINT": "1" if MODE == "debug_one_sample" else "0",

@@ -9,9 +9,39 @@ The extend_attention_fwd_unified kernel uses per-request indptrs, which naturall
 gives batch-invariant results (each request is computed independently).
 """
 
+import os
+
 import torch
 
 _dumper = None
+
+
+def _resolve_dump_cast_dtype():
+    mode = os.environ.get("MILES_BRIDGE_DUMP_CAST_DTYPE", "none").strip().lower()
+    if mode in {"", "none", "off"}:
+        return None
+    if mode in {"fp32", "float32"}:
+        return torch.float32
+    if mode in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    raise ValueError(
+        "Invalid MILES_BRIDGE_DUMP_CAST_DTYPE. Use one of: none, fp32, bf16. "
+        f"Got: {mode!r}"
+    )
+
+
+def _dump_view(x: torch.Tensor) -> torch.Tensor:
+    out = x.detach()
+    cast_dtype = _resolve_dump_cast_dtype()
+    if cast_dtype is not None and out.is_floating_point() and out.dtype != cast_dtype:
+        out = out.to(cast_dtype)
+    return out
+
+
+def _flat_last_dim(x: torch.Tensor) -> torch.Tensor:
+    if x.ndim <= 1:
+        return x.contiguous().view(-1)
+    return x.contiguous().view(-1, x.shape[-1])
 
 
 def _maybe_dump(name: str, value: torch.Tensor) -> None:
@@ -27,7 +57,65 @@ def _maybe_dump(name: str, value: torch.Tensor) -> None:
         except Exception:
             _dumper = False
             return
-    _dumper.dump(name, value)
+    _dumper.dump(name, _dump_view(value))
+
+
+def _is_layer0_or_last(module):
+    layer_idx = getattr(module, "layer_idx", None)
+    num_layers = getattr(getattr(module, "config", None), "num_hidden_layers", None)
+    is_layer0 = layer_idx == 0
+    is_last = layer_idx is not None and num_layers is not None and layer_idx == num_layers - 1
+    return is_layer0, is_last
+
+
+def _make_norm_pre_hook(name: str):
+    def _hook(_mod, inputs):
+        if not inputs:
+            return
+        x = inputs[0]
+        if isinstance(x, torch.Tensor):
+            _maybe_dump(name, _flat_last_dim(x))
+
+    return _hook
+
+
+def _make_norm_post_hook(name: str):
+    def _hook(_mod, _inputs, output):
+        if isinstance(output, torch.Tensor):
+            _maybe_dump(name, _flat_last_dim(output))
+
+    return _hook
+
+
+def _register_norm_dump_hooks(model) -> int:
+    hook_count = 0
+    for _, module in model.named_modules():
+        if not (hasattr(module, "q_norm") and hasattr(module, "k_norm")):
+            continue
+        if getattr(module, "_miles_norm_dump_hooks_registered", False):
+            continue
+
+        is_layer0, is_last = _is_layer0_or_last(module)
+        if not (is_layer0 or is_last):
+            continue
+
+        if is_layer0:
+            module.q_norm.register_forward_pre_hook(_make_norm_pre_hook("layer0_q_pre_norm"))
+            module.q_norm.register_forward_hook(_make_norm_post_hook("layer0_q_post_norm"))
+            module.k_norm.register_forward_pre_hook(_make_norm_pre_hook("layer0_k_pre_norm"))
+            module.k_norm.register_forward_hook(_make_norm_post_hook("layer0_k_post_norm"))
+            hook_count += 4
+
+        if is_last:
+            module.q_norm.register_forward_pre_hook(_make_norm_pre_hook("q_pre_norm"))
+            module.q_norm.register_forward_hook(_make_norm_post_hook("q_post_norm"))
+            module.k_norm.register_forward_pre_hook(_make_norm_pre_hook("k_pre_norm"))
+            module.k_norm.register_forward_hook(_make_norm_post_hook("k_post_norm"))
+            hook_count += 4
+
+        module._miles_norm_dump_hooks_registered = True
+
+    return hook_count
 
 
 def _sglang_triton_attention(
@@ -51,20 +139,17 @@ def _sglang_triton_attention(
         extend_attention_fwd_unified,
     )
 
+    del attention_mask, scaling, dropout, kwargs
+
     B, num_heads, S, D = query.shape
     num_kv_heads = key.shape[1]
     total = B * S
 
     # Determine layer position for selective dumping
-    layer_idx = getattr(module, "layer_idx", None)
-    num_layers = getattr(getattr(module, "config", None), "num_hidden_layers", None)
-    is_layer0 = layer_idx == 0
-    is_last = layer_idx is not None and num_layers is not None and layer_idx == num_layers - 1
+    is_layer0, is_last = _is_layer0_or_last(module)
 
     # Dump q/k (post-rope) and v (post-proj) as received from HF — no modification
     if is_layer0 or is_last:
-        prefix = "layer0" if is_layer0 else ""
-        # q/k are post-rope here; v is post-proj (no norm/rope applied to v)
         q_flat = query.permute(0, 2, 1, 3).contiguous().view(total, -1)
         k_flat = key.permute(0, 2, 1, 3).contiguous().view(total, -1)
         v_flat = value.permute(0, 2, 1, 3).contiguous().view(total, -1)
@@ -77,10 +162,16 @@ def _sglang_triton_attention(
             _maybe_dump("k_post_rope", k_flat)
             _maybe_dump("v_pre_norm", v_flat)
 
-    orig_dtype = query.dtype
-    q = query.to(torch.bfloat16).transpose(1, 2).contiguous().view(total, num_heads, D)
-    k = key.to(torch.bfloat16).transpose(1, 2).contiguous().view(total, num_kv_heads, D)
-    v = value.to(torch.bfloat16).transpose(1, 2).contiguous().view(total, num_kv_heads, D)
+    q = query.transpose(1, 2).contiguous().view(total, num_heads, D)
+    k = key.transpose(1, 2).contiguous().view(total, num_kv_heads, D)
+    v = value.transpose(1, 2).contiguous().view(total, num_kv_heads, D)
+
+    supported_dtypes = {torch.float16, torch.bfloat16}
+    if q.dtype not in supported_dtypes or k.dtype not in supported_dtypes or v.dtype not in supported_dtypes:
+        raise TypeError(
+            "extend_attention_fwd_unified only supports fp16/bf16 in bridge compute path. "
+            f"Got q={q.dtype}, k={k.dtype}, v={v.dtype}."
+        )
 
     o = torch.empty_like(q)
     device = q.device
@@ -90,8 +181,14 @@ def _sglang_triton_attention(
     prefix_lens = torch.zeros(B, device=device, dtype=torch.int32)
 
     extend_attention_fwd_unified(
-        q, o, k, v,
-        qo_indptr, kv_indptr, kv_indices, prefix_lens,
+        q,
+        o,
+        k,
+        v,
+        qo_indptr,
+        kv_indptr,
+        kv_indices,
+        prefix_lens,
         max_len_extend=S,
         is_causal=True,
     )
@@ -102,7 +199,7 @@ def _sglang_triton_attention(
     if is_last:
         _maybe_dump("attn_context_before_o_proj", o.view(total, -1))
 
-    attn_output = o.view(B, S, num_heads, D).to(orig_dtype)
+    attn_output = o.view(B, S, num_heads, D)
     return attn_output, None
 
 
@@ -115,10 +212,11 @@ def apply_sglang_triton_attention_patch(model):
 
     ALL_ATTENTION_FUNCTIONS["sglang_triton"] = _sglang_triton_attention
     model.config._attn_implementation = "sglang_triton"
+    _register_norm_dump_hooks(model)
 
-    # Count attention modules for logging
     patched = sum(
-        1 for _, m in model.named_modules()
+        1
+        for _, m in model.named_modules()
         if hasattr(m, "q_proj") and hasattr(m, "o_proj")
     )
     return patched
