@@ -195,9 +195,17 @@ def _register_layer_observer_dump_hooks(model) -> int:
             post_ln.register_forward_pre_hook(_obs_residual, with_kwargs=True)
             count += 1
 
-        # MLP output (= block delta before residual add)
+        # MLP input and output
         mlp = getattr(layer, "mlp", None)
         if mlp is not None:
+            def _obs_mlp_in(_module, args, kwargs, p=prefix):
+                x = _get_hidden_states(args, kwargs)
+                if x is not None:
+                    _maybe_dump(f"{p}_mlp_input", _flat_last_dim(x))
+
+            mlp.register_forward_pre_hook(_obs_mlp_in, with_kwargs=True)
+            count += 1
+
             def _obs_mlp_out(_module, _args, _kwargs, output, p=prefix):
                 out = output[0] if isinstance(output, tuple) else output
                 if isinstance(out, torch.Tensor):
