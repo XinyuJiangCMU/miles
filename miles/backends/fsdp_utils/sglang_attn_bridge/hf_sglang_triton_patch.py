@@ -289,12 +289,24 @@ def _sglang_triton_attention(
     k = key.transpose(1, 2).contiguous().view(total, num_kv_heads, D)
     v = value.transpose(1, 2).contiguous().view(total, num_kv_heads, D)
 
-    supported_dtypes = {torch.float16, torch.bfloat16}
-    if q.dtype not in supported_dtypes or k.dtype not in supported_dtypes or v.dtype not in supported_dtypes:
-        raise TypeError(
-            "extend_attention_fwd_unified only supports fp16/bf16 in bridge compute path. "
-            f"Got q={q.dtype}, k={k.dtype}, v={v.dtype}."
+    # Keep this behavior aligned with legacy alignment experiments:
+    # force kernel inputs to bf16 right before extend_unified.
+    q_dtype_before, k_dtype_before, v_dtype_before = q.dtype, k.dtype, v.dtype
+    q = q.to(torch.bfloat16)
+    k = k.to(torch.bfloat16)
+    v = v.to(torch.bfloat16)
+    if (
+        (q_dtype_before != q.dtype or k_dtype_before != k.dtype or v_dtype_before != v.dtype)
+        and not getattr(module, "_miles_qkv_cast_logged", False)
+    ):
+        print(
+            "[MILES] bridge kernel cast qkv -> bf16: "
+            f"q {q_dtype_before}->{q.dtype}, "
+            f"k {k_dtype_before}->{k.dtype}, "
+            f"v {v_dtype_before}->{v.dtype}, "
+            f"layer_idx={getattr(module, 'layer_idx', None)}"
         )
+        module._miles_qkv_cast_logged = True
 
     o = torch.empty_like(q)
     device = q.device
