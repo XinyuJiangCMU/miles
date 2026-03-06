@@ -1,65 +1,76 @@
-"""HF-side monkey patch entry for the SGLang Triton attention bridge."""
+"""Minimal patch: replace HF attention kernel with SGLang Triton extend_attention_fwd_unified.
 
-import types
+Instead of monkey-patching the entire attention forward (qkv proj, norm, rope, o_proj),
+we register a custom attention backend via HF's ALL_ATTENTION_FUNCTIONS. This way HF
+keeps its own qkv_proj, norm, rope, o_proj logic — we ONLY replace the core attention
+computation (Q@K^T softmax V) with extend_attention_fwd_unified.
+
+The extend_attention_fwd_unified kernel uses per-request indptrs, which naturally
+gives batch-invariant results (each request is computed independently).
+"""
+
 import torch
 
 
-def _is_patchable_attention(module) -> bool:
-    return (
-        hasattr(module, "q_proj")
-        and hasattr(module, "k_proj")
-        and hasattr(module, "v_proj")
-        and hasattr(module, "o_proj")
-    )
+def _sglang_triton_attention(
+    module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask,
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs,
+):
+    """Drop-in replacement for HF's attention_interface.
 
-
-def run_unified_extend(
-    q_varlen: torch.Tensor,
-    k_buffer: torch.Tensor,
-    v_buffer: torch.Tensor,
-    batch: int,
-    seq_len: int,
-) -> torch.Tensor:
-    """Execute extend_attention_fwd_unified in teacher-forcing prefill mode."""
+    Input:  query [B, num_heads, S, D], key/value [B, num_kv_heads, S, D]
+    Output: attn_output [B, S, num_heads, D], None
+    """
     from sglang.srt.layers.attention.triton_ops.extend_attention import (
         extend_attention_fwd_unified,
     )
 
-    device = q_varlen.device
-    o = torch.empty_like(q_varlen)
-    qo_indptr = torch.arange(0, batch + 1, device=device, dtype=torch.int32) * seq_len
+    B, num_heads, S, D = query.shape
+    num_kv_heads = key.shape[1]
+    total = B * S
+
+    orig_dtype = query.dtype
+    q = query.to(torch.bfloat16).transpose(1, 2).contiguous().view(total, num_heads, D)
+    k = key.to(torch.bfloat16).transpose(1, 2).contiguous().view(total, num_kv_heads, D)
+    v = value.to(torch.bfloat16).transpose(1, 2).contiguous().view(total, num_kv_heads, D)
+
+    o = torch.empty_like(q)
+    device = q.device
+    qo_indptr = torch.arange(0, B + 1, device=device, dtype=torch.int32) * S
     kv_indptr = qo_indptr.clone()
-    kv_indices = torch.arange(batch * seq_len, device=device, dtype=torch.int64)
-    prefix_lens = torch.zeros(batch, device=device, dtype=torch.int32)
+    kv_indices = torch.arange(total, device=device, dtype=torch.int64)
+    prefix_lens = torch.zeros(B, device=device, dtype=torch.int32)
 
     extend_attention_fwd_unified(
-        q_varlen,
-        o,
-        k_buffer,
-        v_buffer,
-        qo_indptr,
-        kv_indptr,
-        kv_indices,
-        prefix_lens,
-        max_len_extend=seq_len,
+        q, o, k, v,
+        qo_indptr, kv_indptr, kv_indices, prefix_lens,
+        max_len_extend=S,
         is_causal=True,
     )
-    return o
+
+    attn_output = o.view(B, S, num_heads, D).to(orig_dtype)
+    return attn_output, None
 
 
 def apply_sglang_triton_attention_patch(model):
-    """Patch HF attention modules to use the SGLang Triton unified-extend path."""
-    from .models.qwen3 import qwen3_triton_forward
+    """Register SGLang Triton as attention backend and activate it on the model.
 
-    patched = 0
-    for _name, module in model.named_modules():
-        if not _is_patchable_attention(module):
-            continue
-        if getattr(module, "_sglang_triton_patched", False):
-            continue
+    Uses HF's ALL_ATTENTION_FUNCTIONS registry — no monkey-patching of forward methods.
+    """
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-        module.forward = types.MethodType(qwen3_triton_forward, module)
-        module._sglang_triton_patched = True
-        patched += 1
+    ALL_ATTENTION_FUNCTIONS["sglang_triton"] = _sglang_triton_attention
+    model.config._attn_implementation = "sglang_triton"
+
+    # Count attention modules for logging
+    patched = sum(
+        1 for _, m in model.named_modules()
+        if hasattr(m, "q_proj") and hasattr(m, "o_proj")
+    )
     return patched
-
