@@ -58,6 +58,8 @@ def _sglang_triton_attention(
         o,
         k,
         v,
+        1.0,  # k_scale (no FP8)
+        1.0,  # v_scale (no FP8)
         qo_indptr,
         kv_indptr,
         kv_indices,
