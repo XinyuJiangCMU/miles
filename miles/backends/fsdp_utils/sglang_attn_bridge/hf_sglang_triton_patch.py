@@ -9,33 +9,15 @@ The extend_attention_fwd_unified kernel uses per-request indptrs, which naturall
 gives batch-invariant results (each request is computed independently).
 """
 
-import os
-
 import torch
 
 _dumper = None
 
 
-def _resolve_dump_cast_dtype():
-    mode = os.environ.get("MILES_BRIDGE_DUMP_CAST_DTYPE", "none").strip().lower()
-    if mode in {"", "none", "off"}:
-        return None
-    if mode in {"fp32", "float32"}:
-        return torch.float32
-    if mode in {"bf16", "bfloat16"}:
-        return torch.bfloat16
-    raise ValueError(
-        "Invalid MILES_BRIDGE_DUMP_CAST_DTYPE. Use one of: none, fp32, bf16. "
-        f"Got: {mode!r}"
-    )
-
-
-def _dump_view(x: torch.Tensor) -> torch.Tensor:
+def _dump_view(x: torch.Tensor):
+    # Dump raw dtype by default; never cast compute tensors for dump.
     out = x.detach()
-    cast_dtype = _resolve_dump_cast_dtype()
-    if cast_dtype is not None and out.is_floating_point() and out.dtype != cast_dtype:
-        out = out.to(cast_dtype)
-    return out
+    return out, out.dtype, out.dtype
 
 
 def _flat_last_dim(x: torch.Tensor) -> torch.Tensor:
@@ -70,7 +52,8 @@ def _maybe_dump(name: str, value: torch.Tensor) -> None:
         except Exception:
             _dumper = False
             return
-    _dumper.dump(name, _dump_view(value))
+    dump_value, _, _ = _dump_view(value)
+    _dumper.dump(name, dump_value)
 
 
 def _is_layer0_or_last(module):
