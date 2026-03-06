@@ -351,7 +351,9 @@ def apply_sglang_triton_attention_patch(model):
     model.config._attn_implementation = "sglang_triton"
 
     # Register dtype mutation hooks BEFORE dump hooks so observers see correct dtypes
-    policy = ExecutionPolicy()
+    # residual_fp32=True matches SGLang's fp32_residual: keeps residual stream in fp32
+    # so residual(fp32) + attn_out(bf16) → fp32, matching SGLang's precision
+    policy = ExecutionPolicy(residual_fp32=True)
     register_execution_policy_hooks(model, policy)
 
     _register_norm_dump_hooks(model)
