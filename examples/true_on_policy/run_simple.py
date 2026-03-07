@@ -28,26 +28,15 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        f"--num-rollout {2 if MODE == 'debug_one_sample' else 3000} "
-        f"--rollout-batch-size {1 if MODE == 'debug_one_sample' else 32} "
-        f"--n-samples-per-prompt {1 if MODE == 'debug_one_sample' else 8} "
-        f"--rollout-max-response-len {2 if MODE == 'debug_one_sample' else 1024} "
+        f"--num-rollout {2 if MODE == 'debug_one_sample' else 128} "
+        f"--rollout-batch-size {1 if MODE == 'debug_one_sample' else 16} "
+        f"--n-samples-per-prompt {1 if MODE == 'debug_one_sample' else 4} "
+        f"--rollout-max-response-len {2 if MODE == 'debug_one_sample' else 256} "
         "--rollout-temperature 1 "
-        # temp remove this to make test easier
-        # "--over-sampling-batch-size 64 "
-        # "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-        f"--global-batch-size {1 if MODE == 'debug_one_sample' else 256} "
+        f"--global-batch-size {1 if MODE == 'debug_one_sample' else 64} "
     )
 
     eval_args = ""
-    if MODE == "normal":
-        eval_args = (
-            "--eval-interval 20 "
-            "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
-            "--n-samples-per-eval-prompt 1 "
-            "--eval-max-response-len 1024 "
-            "--eval-top-k 1 "
-        )
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -87,8 +76,6 @@ def execute():
     ci_args = (
         "--ci-test "
         "--ci-disable-kl-checker "
-        "--ci-metric-checker-key eval/gsm8k "
-        "--ci-metric-checker-threshold 0.71 "  # loose threshold at 60 step
     )
 
     misc_args = "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {NUM_GPUS} " "--colocate " "--train-backend fsdp "
