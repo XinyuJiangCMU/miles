@@ -5,9 +5,13 @@ import triton.language as tl
 from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
     invoke_fused_moe_kernel,
     moe_align_block_size,
-    moe_sum_reduce,
     silu_and_mul,
 )
+
+try:
+    from sglang.srt.layers.moe.fused_moe_triton.fused_moe import moe_sum_reduce
+except ImportError:
+    from sgl_kernel import moe_sum_reduce
 
 from .fused_moe_triton_backward_kernels import invoke_fused_moe_backward_kernel
 

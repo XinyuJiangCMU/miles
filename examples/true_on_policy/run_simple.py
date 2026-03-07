@@ -103,17 +103,13 @@ def execute():
     true_on_policy_args = (
         "--sglang-enable-deterministic-inference "
         "--sglang-rl-on-policy-target fsdp "
-        "--sglang-attention-backend fa3 "
-        "--attn-implementation flash_attention_3 "
+        "--sglang-attention-backend triton "
+        "--attn-implementation triton "
         "--deterministic-mode "
         "--true-on-policy-mode "
     )
     true_on_policy_envs = {
-        # TODO note: "Ring" in original RL PR, "allreduce:tree" in SGLang
-        # "NCCL_ALGO": "Ring",
         "NCCL_ALGO": "allreduce:tree",
-        "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
-        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
     }
 
     train_args = (
