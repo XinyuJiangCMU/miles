@@ -134,7 +134,7 @@ def execute():
         megatron_model_type=None,
         extra_env_vars={
             **true_on_policy_envs,
-            "PYTHONPATH": "/data/true_on_policy/final-version/sglang/python:/data/true_on_policy/final-version/miles:/root/Megatron-LM",
+            "PYTHONPATH": "/app/sglang/python:/app/true_on_policy/miles:/root/Megatron-LM",
             "SGLANG_DUMPER_ENABLE": "1" if MODE == "debug_one_sample" else "0",
             "SGLANG_TEMP_UTILS_ENABLE_DEBUG_PRINT": "1" if MODE == "debug_one_sample" else "0",
         },
