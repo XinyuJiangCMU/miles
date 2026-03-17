@@ -24,6 +24,21 @@ def _get_moe_sum_reduce():
         return moe_sum_reduce
     except ImportError:
         pass
+
+    # On AMD/ROCm, prefer AITER's moe_sum (54x faster than PyTorch fallback)
+    if _IS_AMD:
+        try:
+            from aiter import moe_sum as _aiter_moe_sum
+
+            def _moe_sum_reduce_aiter(input_tensor, output_tensor, scale=1.0):
+                _aiter_moe_sum(input_tensor, output_tensor)
+                if scale != 1.0:
+                    output_tensor.mul_(scale)
+
+            return _moe_sum_reduce_aiter
+        except ImportError:
+            pass
+
     try:
         from sgl_kernel import moe_sum_reduce as _moe_sum_reduce
 
