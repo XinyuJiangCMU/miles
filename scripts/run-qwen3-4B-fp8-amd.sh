@@ -98,6 +98,11 @@ SGLANG_ARGS=(
    --sglang-disable-custom-all-reduce
 )
 
+FSDP_ARGS=(
+   # MI300X has 192GB VRAM - use larger buffer for faster weight update
+   --update-weight-buffer-size 1073741824  # 1GB
+)
+
 # launch ray
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 NUM_GPUS=$(echo ${HIP_VISIBLE_DEVICES} | tr ',' '\n' | wc -l)
@@ -123,4 +128,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${ROLLOUT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
    ${GRPO_ARGS[@]} \
-   ${SGLANG_ARGS[@]}
+   ${SGLANG_ARGS[@]} \
+   ${FSDP_ARGS[@]}
