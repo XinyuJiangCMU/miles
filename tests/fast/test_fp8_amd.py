@@ -198,6 +198,29 @@ def test_flash_attention():
     print("PASS: Flash attention fwd+bwd")
 
 
+def test_fp8_converter():
+    """Test FP8 weight conversion tools on AMD."""
+    from tools.convert_hf_to_fp8 import tensor_fp8, block_fp8
+
+    w = torch.randn(256, 128, device="cuda", dtype=torch.bfloat16)
+
+    # Per-tensor
+    qw, s = tensor_fp8(w)
+    assert qw.dtype == torch.float8_e4m3fn
+    assert s.shape == (1,)
+
+    # Block-wise
+    qw_b, s_b = block_fp8(w, [128, 128])
+    assert qw_b.dtype == torch.float8_e4m3fn
+    assert s_b.shape == (2, 1)
+
+    # Verify reconstruction quality
+    w_recon = qw.to(torch.float32) * s
+    cos = torch.nn.functional.cosine_similarity(w.float().flatten(), w_recon.flatten(), dim=0)
+    assert cos > 0.99, f"Poor reconstruction: {cos:.4f}"
+    print("PASS: FP8 converter")
+
+
 if __name__ == "__main__":
     print(f"Platform: {'ROCm' if torch.version.hip else 'CUDA'}")
     print(f"Device: {torch.cuda.get_device_name(0)}")
@@ -217,6 +240,7 @@ if __name__ == "__main__":
         test_check_has_nvlink,
         test_fused_moe_backward,
         test_flash_attention,
+        test_fp8_converter,
     ]
 
     passed = 0
