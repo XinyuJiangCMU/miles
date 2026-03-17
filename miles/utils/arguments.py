@@ -1608,6 +1608,20 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
+    # AMD/ROCm environment checks
+    import torch
+    if torch.version.hip is not None:
+        if not os.environ.get("RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"):
+            logger.warning(
+                "Running on AMD/ROCm but RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES is not set. "
+                "This may cause GPU ID mapping issues. Set it to '1' for correct behavior."
+            )
+        if not os.environ.get("HIP_VISIBLE_DEVICES"):
+            logger.warning(
+                "Running on AMD/ROCm but HIP_VISIBLE_DEVICES is not set. "
+                "Ray may not correctly detect GPU topology."
+            )
+
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):
             raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
