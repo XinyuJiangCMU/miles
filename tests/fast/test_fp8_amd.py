@@ -122,6 +122,31 @@ def test_gpu_id_mapping():
             os.environ["CUDA_VISIBLE_DEVICES"] = old_cvd
 
 
+def test_moe_sum_reduce():
+    """Test that MoE sum reduce uses AITER on AMD."""
+    from miles.backends.fsdp_utils.kernels.fused_experts import moe_sum_reduce
+
+    x = torch.randn(32, 2, 256, device="cuda", dtype=torch.bfloat16)
+    out = torch.empty(32, 256, device="cuda", dtype=torch.bfloat16)
+    moe_sum_reduce(x, out, 1.0)
+    ref = x.sum(dim=1)
+    diff = (out.float() - ref.float()).abs().max().item()
+    assert diff < 0.01, f"moe_sum_reduce diff too large: {diff}"
+    print("PASS: MoE sum reduce")
+
+
+def test_moe_config_amd():
+    """Test that AMD-optimized MoE config is used."""
+    from miles.backends.fsdp_utils.kernels.fused_experts import _DEFAULT_MOE_CONFIG, _IS_AMD
+
+    if _IS_AMD:
+        assert _DEFAULT_MOE_CONFIG["BLOCK_SIZE_K"] == 128, f"Expected K=128, got {_DEFAULT_MOE_CONFIG['BLOCK_SIZE_K']}"
+        assert _DEFAULT_MOE_CONFIG["BLOCK_SIZE_N"] == 128, f"Expected N=128, got {_DEFAULT_MOE_CONFIG['BLOCK_SIZE_N']}"
+        print("PASS: AMD-optimized MoE config")
+    else:
+        print("SKIP: Not on AMD")
+
+
 def test_check_has_nvlink():
     """Test that check_has_nvlink returns False on AMD."""
     from miles.utils.external_utils.command_utils import check_has_nvlink
@@ -186,6 +211,8 @@ if __name__ == "__main__":
         test_per_tensor_quant,
         test_transformer_engine,
         test_gpu_id_mapping,
+        test_moe_sum_reduce,
+        test_moe_config_amd,
         test_check_has_nvlink,
         test_fused_moe_backward,
         test_flash_attention,
