@@ -134,9 +134,14 @@ def execute_train(
     )
 
     if not external_ray:
+        # Auto-set AMD/ROCm env vars for Ray if on AMD and not already set
+        amd_env = ""
+        if not check_has_nvlink() and not os.environ.get("RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"):
+            amd_env = "export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 && "
         exec_command(
             # will prevent ray from buffering stdout/stderr
             f"export PYTHONBUFFERED=16 && "
+            f"{amd_env}"
             f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
         )
 
@@ -156,6 +161,8 @@ def execute_train(
                     }
                 ),
                 "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
+                # AMD/ROCm: enable CUDA graph compatible memory saver
+                **({"SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true"} if not check_has_nvlink() else {}),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
