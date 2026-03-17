@@ -8,10 +8,35 @@ from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
     silu_and_mul,
 )
 
-try:
-    from sglang.srt.layers.moe.fused_moe_triton.fused_moe import moe_sum_reduce
-except ImportError:
-    from sgl_kernel import moe_sum_reduce
+def _get_moe_sum_reduce():
+    """Get moe_sum_reduce with fallback for ROCm."""
+    try:
+        from sglang.srt.layers.moe.fused_moe_triton.fused_moe import moe_sum_reduce
+
+        return moe_sum_reduce
+    except ImportError:
+        pass
+    try:
+        from sgl_kernel import moe_sum_reduce as _moe_sum_reduce
+
+        # Test if the kernel is actually available (may fail on ROCm)
+        import torch
+
+        _test_in = torch.zeros(1, 1, 1, device="cuda")
+        _test_out = torch.zeros(1, 1, device="cuda")
+        _moe_sum_reduce(_test_in, _test_out, 1.0)
+        return _moe_sum_reduce
+    except Exception:
+        pass
+
+    # Pure PyTorch fallback
+    def _moe_sum_reduce_fallback(input_tensor, output_tensor, scale=1.0):
+        output_tensor.copy_(input_tensor.sum(dim=1) * scale)
+
+    return _moe_sum_reduce_fallback
+
+
+moe_sum_reduce = _get_moe_sum_reduce()
 
 from .fused_moe_triton_backward_kernels import invoke_fused_moe_backward_kernel
 
