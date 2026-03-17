@@ -142,12 +142,14 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="{
      \"env_vars\": {
         \"PYTHONPATH\": \"${MEGATRON_LM_PATH}/\",
-        \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
+        \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+        \"SGLANG_MEMORY_SAVER_CUDA_GRAPH\": \"true\"
      }
    }" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
+   --actor-num-gpus-per-node ${NUM_GPUS} \
+   --num-gpus-per-node ${NUM_GPUS} \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
