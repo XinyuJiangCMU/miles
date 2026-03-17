@@ -8,6 +8,14 @@ from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
     silu_and_mul,
 )
 
+# AMD MI300X benefits from larger block sizes due to wider memory bus and CDNA3 matrix cores
+_IS_AMD = hasattr(torch.version, "hip") and torch.version.hip is not None
+_DEFAULT_MOE_CONFIG = (
+    {"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}
+    if _IS_AMD
+    else {"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8}
+)
+
 def _get_moe_sum_reduce():
     """Get moe_sum_reduce with fallback for ROCm."""
     try:
@@ -56,13 +64,7 @@ class GateUpProjFunction(torch.autograd.Function):
         # https://github.com/vllm-project/vllm/issues/5938
         CHUNK_SIZE = 64 * 1024
 
-        # default deterministic config
-        config = {
-            "BLOCK_SIZE_M": 64,
-            "BLOCK_SIZE_N": 64,
-            "BLOCK_SIZE_K": 32,
-            "GROUP_SIZE_M": 8,
-        }
+        config = _DEFAULT_MOE_CONFIG
 
         topk = topk_ids.shape[1]
 
@@ -246,13 +248,7 @@ class DownProjFunction(torch.autograd.Function):
         # https://github.com/vllm-project/vllm/issues/5938
         CHUNK_SIZE = 64 * 1024
 
-        # default deterministic config
-        config = {
-            "BLOCK_SIZE_M": 64,
-            "BLOCK_SIZE_N": 64,
-            "BLOCK_SIZE_K": 32,
-            "GROUP_SIZE_M": 8,
-        }
+        config = _DEFAULT_MOE_CONFIG
 
         intermediate_cache3 = torch.empty(
             (num_tokens, topk, w2.shape[1]),
@@ -297,8 +293,8 @@ class DownProjFunction(torch.autograd.Function):
                 use_int4_w4a16=False,
                 per_channel_quant=False,
                 block_shape=None,
-                a_use_tma=False,
-                b_use_tma=False,
+                c_sorted=False,
+                filter_expert=True,
             )
 
         ctx.save_for_backward(intermediate_cache2, w2, topk_weights, topk_ids)
