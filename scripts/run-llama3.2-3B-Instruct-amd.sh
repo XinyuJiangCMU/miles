@@ -123,6 +123,7 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.4
+   --sglang-disable-custom-all-reduce
 )
 
 MISC_ARGS=(
