@@ -98,7 +98,17 @@ Note: We implemented a dedicated AMD conversion script that forces a CPU-only co
 ⚠️ If you encounter an issue where miles cannot be found, please run `pip install -e . --no-deps` in the miles directory.
 
 
-### Example: Qwen3-4B
+### Example: Qwen3-4B (FSDP Backend)
+
+For simpler setup without checkpoint conversion, use the FSDP backend:
+
+```bash
+HIP_VISIBLE_DEVICES=0,1 bash scripts/run-qwen3-4B-fp8-amd.sh
+```
+
+This uses HuggingFace checkpoints directly (no conversion needed) and supports FP8 quantized inference.
+
+### Example: Qwen3-4B (Megatron Backend)
 
 We provide examples to use [Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B), please refer to:
 - [Example: Qwen3-4B Model](https://github.com/radixark/miles/blob/main/scripts/run-qwen3-4B-amd.sh): Just run
@@ -110,7 +120,10 @@ DATA_DIR=/root \
 bash scripts/run-qwen3-4B-amd.sh
 ``` 
 
-⚠️ Note: The main difference between ROCm's training script and NVIDIA's script is that you need to set `RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES` and `HIP_VISIBLE_DEVICES` for ray to function properly on AMD GPUs.
+⚠️ Note: Key differences for ROCm vs NVIDIA:
+- Set `RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1` and `HIP_VISIBLE_DEVICES` for Ray
+- Use `--sglang-disable-custom-all-reduce` to avoid hipIpc issues on non-contiguous GPU sets
+- Set `SGLANG_MEMORY_SAVER_CUDA_GRAPH=true` for CUDA graph compatibility
 
 - We show the training script below:
 
@@ -232,6 +245,7 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
+   --sglang-disable-custom-all-reduce
 )
 
 MISC_ARGS=(
@@ -253,19 +267,21 @@ NUM_GPUS=$(echo ${HIP_VISIBLE_DEVICES} | tr ',' '\n' | wc -l)
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 
-# "PYTHONPATH": "/workspace/Megatron-LM/",
-MEGATRON_LM_PATH=$(pip list | grep megatron-core | awk '{print $NF}')
+# Dynamically detect Megatron-LM installation path
+MEGATRON_LM_PATH=$(python3 -c "import megatron; import os; print(os.path.dirname(os.path.dirname(megatron.__file__)))" 2>/dev/null || echo "/app/Megatron-LM")
 
 ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json='{
-     "env_vars": {
-        "PYTHONPATH": "/workspace/Megatron-LM/",
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1"
+   --runtime-env-json="{
+     \"env_vars\": {
+        \"PYTHONPATH\": \"${MEGATRON_LM_PATH}/\",
+        \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+        \"SGLANG_MEMORY_SAVER_CUDA_GRAPH\": \"true\"
      }
-   }' \
+   }" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
+   --actor-num-gpus-per-node ${NUM_GPUS} \
+   --num-gpus-per-node ${NUM_GPUS} \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \

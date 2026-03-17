@@ -145,19 +145,21 @@ NUM_GPUS=$(echo ${HIP_VISIBLE_DEVICES} | tr ',' '\n' | wc -l)
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 
-# "PYTHONPATH": "/workspace/Megatron-LM/",
-MEGATRON_LM_PATH=$(pip list | grep megatron-core | awk '{print $NF}')
+# Dynamically detect Megatron-LM installation path
+MEGATRON_LM_PATH=$(python3 -c "import megatron; import os; print(os.path.dirname(os.path.dirname(megatron.__file__)))" 2>/dev/null || echo "/app/Megatron-LM")
 
 ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json='{
-     "env_vars": {
-        "PYTHONPATH": "/workspace/Megatron-LM/",
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1"
+   --runtime-env-json="{
+     \"env_vars\": {
+        \"PYTHONPATH\": \"${MEGATRON_LM_PATH}/\",
+        \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+        \"SGLANG_MEMORY_SAVER_CUDA_GRAPH\": \"true\"
      }
-   }' \
+   }" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
+   --actor-num-gpus-per-node ${NUM_GPUS} \
+   --num-gpus-per-node ${NUM_GPUS} \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
