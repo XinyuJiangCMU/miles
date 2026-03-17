@@ -12,7 +12,7 @@ _IS_AMD = hasattr(torch.version, "hip") and torch.version.hip is not None
 
 # AMD MI300X benefits from larger block sizes
 _DEFAULT_BWD_CONFIG = (
-    {"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}
+    {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}
     if _IS_AMD
     else {"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 8}
 )

@@ -140,6 +140,7 @@ def test_moe_config_amd():
     from miles.backends.fsdp_utils.kernels.fused_experts import _DEFAULT_MOE_CONFIG, _IS_AMD
 
     if _IS_AMD:
+        assert _DEFAULT_MOE_CONFIG["BLOCK_SIZE_M"] == 128, f"Expected M=128, got {_DEFAULT_MOE_CONFIG['BLOCK_SIZE_M']}"
         assert _DEFAULT_MOE_CONFIG["BLOCK_SIZE_K"] == 128, f"Expected K=128, got {_DEFAULT_MOE_CONFIG['BLOCK_SIZE_K']}"
         assert _DEFAULT_MOE_CONFIG["BLOCK_SIZE_N"] == 128, f"Expected N=128, got {_DEFAULT_MOE_CONFIG['BLOCK_SIZE_N']}"
         print("PASS: AMD-optimized MoE config")
