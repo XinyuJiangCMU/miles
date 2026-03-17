@@ -36,6 +36,7 @@ export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"} #You can ch
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
+export SGLANG_USE_AITER=1
 
 # Current Model convert script on AMD GPU has some issue, please download the converted model from here: https://huggingface.co/zyzshishui0627/models 
 
