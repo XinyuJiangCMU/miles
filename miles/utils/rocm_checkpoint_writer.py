@@ -1,5 +1,11 @@
+import logging
+
 import torch
 from megatron.core.dist_checkpointing.strategies.filesystem_async import FileSystemWriterAsync
+
+logger = logging.getLogger(__name__)
+
+_ROCM_WARNED = False
 
 
 class ROCmFileSystemWriterAsync(FileSystemWriterAsync):
@@ -12,16 +18,14 @@ class ROCmFileSystemWriterAsync(FileSystemWriterAsync):
 
     @staticmethod
     def preload_tensors(*args, **kwargs):
-        # Change argument non_blocking to False on HIP platform
-        # The tensors will be stored in pinned memory if non_blocking=True
-        # Currently on the ROCm platform, forking a subprocess afterward
-        # with pinned_memory=True will trigger segmentation fault
+        global _ROCM_WARNED
         if torch.version.hip:
-            print("HIP/ROCm detected: setting non_blocking=False in preload_tensors")
+            if not _ROCM_WARNED:
+                logger.info("ROCm: setting non_blocking=False in checkpoint preload_tensors")
+                _ROCM_WARNED = True
             if "non_blocking" in kwargs:
                 kwargs["non_blocking"] = False
             elif len(args) > 1 and isinstance(args[-1], bool):
-                # non_blocking is typically the last argument
                 args = args[:-1] + (False,)
 
         return FileSystemWriterAsync.preload_tensors(*args, **kwargs)
