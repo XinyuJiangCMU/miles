@@ -94,6 +94,8 @@ SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    # Lower memory fraction for colocate mode to avoid OOM
    --sglang-mem-fraction-static 0.3
+   # Disable custom all-reduce on non-default GPU sets (hipIpcOpenMemHandle issue)
+   --sglang-disable-custom-all-reduce
 )
 
 # launch ray

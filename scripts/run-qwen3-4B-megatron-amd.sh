@@ -118,6 +118,9 @@ OPTIMIZER_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
+   # Disable custom all-reduce for non-default GPU sets (hipIpcOpenMemHandle)
+   # Only needed when using a subset of GPUs; can be removed for full-node runs
+   # --sglang-disable-custom-all-reduce
 )
 
 MISC_ARGS=(
