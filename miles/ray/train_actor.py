@@ -84,8 +84,36 @@ class TrainRayActor(RayActor):
 
         try:
             if torch.version.hip is not None:
-                logger.info("Detected ROCm/HIP environment, skipping NUMA affinity setup")
-                # will find the coresponding API to implement ROCm version as below
+                # Set NUMA affinity for AMD GPUs via sysfs
+                local_rank = int(os.environ.get("LOCAL_RANK", 0))
+                numa_path = f"/sys/class/drm/card{local_rank}/device/numa_node"
+                if os.path.exists(numa_path):
+                    with open(numa_path) as f:
+                        numa_node = int(f.read().strip())
+                    if numa_node >= 0:
+                        import psutil
+                        p = psutil.Process()
+                        # Get CPUs for this NUMA node
+                        numa_cpus_path = f"/sys/devices/system/node/node{numa_node}/cpulist"
+                        if os.path.exists(numa_cpus_path):
+                            with open(numa_cpus_path) as f:
+                                cpu_list_str = f.read().strip()
+                            # Parse CPU list (e.g. "0-15,128-143")
+                            cpus = []
+                            for part in cpu_list_str.split(","):
+                                if "-" in part:
+                                    start, end = part.split("-")
+                                    cpus.extend(range(int(start), int(end) + 1))
+                                else:
+                                    cpus.append(int(part))
+                            p.cpu_affinity(cpus)
+                            logger.info(f"ROCm: Set NUMA affinity for GPU {local_rank} to node {numa_node}")
+                        else:
+                            logger.info(f"ROCm: NUMA cpulist not found for node {numa_node}")
+                    else:
+                        logger.info(f"ROCm: GPU {local_rank} has no NUMA node assigned")
+                else:
+                    logger.info("ROCm: NUMA node info not available, skipping affinity")
             else:
                 import pynvml
 
