@@ -164,8 +164,10 @@ class GateUpProjFunction(torch.autograd.Function):
         # GateUpProj stage doesn't need topk_weights gradient
         grad_topk_weights = torch.zeros_like(topk_weights)
 
+        num_chunks = (num_tokens // CHUNK_SIZE) + 1
+
         # Process in chunks to match forward pass
-        for chunk in range((num_tokens // CHUNK_SIZE) + 1):
+        for chunk in range(num_chunks):
             begin_chunk_idx, end_chunk_idx = (
                 chunk * CHUNK_SIZE,
                 min((chunk + 1) * CHUNK_SIZE, num_tokens),
@@ -185,17 +187,15 @@ class GateUpProjFunction(torch.autograd.Function):
                 curr_topk_ids, config["BLOCK_SIZE_M"], E
             )
 
-            # Prepare gradient buffer for this chunk
-            curr_grad_hidden_states = torch.zeros_like(curr_hidden_states)
-            curr_grad_w1 = torch.zeros_like(w1)
+            # For single-chunk case, use grad_w1 directly (kernel uses atomic_add)
+            curr_grad_w1 = grad_w1 if num_chunks == 1 else torch.zeros_like(w1)
 
             # Call Triton backward kernel with MUL_ROUTED_WEIGHT=False
-            # Use chunk of hidden_states to match sorted_token_ids indices
             invoke_fused_moe_backward_kernel(
                 grad_output=curr_grad_output,
-                input=curr_hidden_states,  # Use chunk of hidden_states to match sorted_token_ids
+                input=curr_hidden_states,
                 weight=w1,
-                grad_input=curr_grad_hidden_states,
+                grad_input=grad_hidden_states[begin_chunk_idx:end_chunk_idx],
                 grad_weight=curr_grad_w1,
                 grad_topk_weights=None,  # Not needed for GateUpProj
                 topk_weights=curr_topk_weights,
@@ -209,9 +209,9 @@ class GateUpProjFunction(torch.autograd.Function):
                 compute_type=tl.bfloat16,
             )
 
-            # Accumulate gradients
-            grad_hidden_states[begin_chunk_idx:end_chunk_idx] += curr_grad_hidden_states
-            grad_w1 += curr_grad_w1
+            # Accumulate weight gradients for multi-chunk case
+            if num_chunks > 1:
+                grad_w1 += curr_grad_w1
 
         return grad_hidden_states, grad_w1, grad_topk_weights, None
 
@@ -343,8 +343,10 @@ class DownProjFunction(torch.autograd.Function):
         grad_w2 = torch.zeros_like(w2)
         grad_topk_weights = torch.zeros_like(topk_weights)
 
+        num_chunks = (num_tokens // CHUNK_SIZE) + 1
+
         # Process in chunks to match forward pass
-        for chunk in range((num_tokens // CHUNK_SIZE) + 1):
+        for chunk in range(num_chunks):
             begin_chunk_idx, end_chunk_idx = (
                 chunk * CHUNK_SIZE,
                 min((chunk + 1) * CHUNK_SIZE, num_tokens),
@@ -364,18 +366,20 @@ class DownProjFunction(torch.autograd.Function):
                 curr_topk_ids, config["BLOCK_SIZE_M"], E
             )
 
-            # Prepare gradient buffers for this chunk
-            curr_grad_intermediate_cache2 = torch.zeros_like(curr_intermediate_cache2)
-            curr_grad_w2 = torch.zeros_like(w2)
-            curr_grad_topk_weights = torch.zeros_like(curr_topk_weights)
+            # For single-chunk case, use output buffers directly (kernel uses atomic_add)
+            if num_chunks == 1:
+                curr_grad_w2 = grad_w2
+                curr_grad_topk_weights = grad_topk_weights[begin_chunk_idx:end_chunk_idx]
+            else:
+                curr_grad_w2 = torch.zeros_like(w2)
+                curr_grad_topk_weights = torch.zeros_like(curr_topk_weights)
 
             # Call Triton backward kernel with MUL_ROUTED_WEIGHT=True
-            # Note: Use top_k=1 to match forward pass indexing
             invoke_fused_moe_backward_kernel(
                 grad_output=curr_grad_output,
                 input=curr_intermediate_cache2,
                 weight=w2,
-                grad_input=curr_grad_intermediate_cache2,
+                grad_input=grad_intermediate_cache2[begin_chunk_idx * topk : end_chunk_idx * topk],
                 grad_weight=curr_grad_w2,
                 grad_topk_weights=curr_grad_topk_weights,
                 topk_weights=curr_topk_weights,
@@ -389,10 +393,10 @@ class DownProjFunction(torch.autograd.Function):
                 compute_type=tl.bfloat16,
             )
 
-            # Accumulate gradients
-            grad_intermediate_cache2[begin_chunk_idx * topk : end_chunk_idx * topk] = curr_grad_intermediate_cache2
-            grad_w2 += curr_grad_w2
-            grad_topk_weights[begin_chunk_idx:end_chunk_idx] = curr_grad_topk_weights
+            # Accumulate weight/topk gradients for multi-chunk case
+            if num_chunks > 1:
+                grad_w2 += curr_grad_w2
+                grad_topk_weights[begin_chunk_idx:end_chunk_idx] = curr_grad_topk_weights
 
         return grad_intermediate_cache2, grad_w2, grad_topk_weights, None
 
