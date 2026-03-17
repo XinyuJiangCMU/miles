@@ -25,6 +25,9 @@ export VLLM_FP8_ACT_PADDING=1
 export VLLM_FP8_WEIGHT_PADDING=1
 export VLLM_FP8_REDUCE_CONV=1
 
+# Memory optimization
+export PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
+
 # Inductor autotuning
 export TORCHINDUCTOR_MAX_AUTOTUNE=1
 export TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
