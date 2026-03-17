@@ -133,6 +133,45 @@ def test_check_has_nvlink():
         print("SKIP: Not on AMD")
 
 
+def test_fused_moe_backward():
+    """Test FSDP MoE forward+backward on AMD."""
+    from miles.backends.fsdp_utils.kernels.fused_experts import (
+        DownProjFunction,
+        GateUpProjFunction,
+        MoeSumReduceFunction,
+        SiluAndMulFunction,
+    )
+
+    E, N, K = 4, 1024 * 2, 512
+    num_tokens, topk = 16, 2
+    hidden = torch.randn(num_tokens, K, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    w1 = torch.randn(E, N, K, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    w2 = torch.randn(E, K, N // 2, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    topk_w = torch.randn(num_tokens, topk, device="cuda", dtype=torch.bfloat16).softmax(-1).requires_grad_(True)
+    topk_ids = torch.randint(0, E, (num_tokens, topk), device="cuda", dtype=torch.int32)
+
+    y1 = GateUpProjFunction.apply(hidden, w1, topk_w, topk_ids)
+    y2 = SiluAndMulFunction.apply(y1)
+    y3 = DownProjFunction.apply(y2, w2, topk_w, topk_ids)
+    out = MoeSumReduceFunction.apply(y3, (num_tokens, K))
+    out.sum().backward()
+    assert hidden.grad is not None and hidden.grad.norm() > 0
+    print("PASS: Fused MoE backward")
+
+
+def test_flash_attention():
+    """Test flash attention on AMD."""
+    from flash_attn import flash_attn_func
+
+    q = torch.randn(1, 8, 32, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    k = torch.randn(1, 2, 32, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    v = torch.randn(1, 2, 32, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    out = flash_attn_func(q, k, v, causal=True)
+    out.sum().backward()
+    assert q.grad is not None
+    print("PASS: Flash attention fwd+bwd")
+
+
 if __name__ == "__main__":
     print(f"Platform: {'ROCm' if torch.version.hip else 'CUDA'}")
     print(f"Device: {torch.cuda.get_device_name(0)}")
@@ -148,6 +187,8 @@ if __name__ == "__main__":
         test_transformer_engine,
         test_gpu_id_mapping,
         test_check_has_nvlink,
+        test_fused_moe_backward,
+        test_flash_attention,
     ]
 
     passed = 0
