@@ -200,6 +200,11 @@ def _parse_extra_env_vars(text: str):
 
 
 def check_has_nvlink():
+    import torch
+
+    if torch.version.hip is not None:
+        # AMD GPUs use xGMI/Infinity Fabric, not NVLink
+        return False
     output = exec_command("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
     return int(output) > 0
 

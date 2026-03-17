@@ -178,7 +178,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available, cannot run MXFP8 quantization.")
+        raise RuntimeError("GPU is not available, cannot run MXFP8 quantization.")
 
     if isinstance(args.device, str) and args.device.isdigit():
         device = torch.device(f"cuda:{args.device}")
@@ -186,7 +186,7 @@ def main() -> None:
         device = torch.device(args.device)
 
     if device.type != "cuda":
-        raise RuntimeError("MXFP8 quantization requires a CUDA device.")
+        raise RuntimeError("MXFP8 quantization requires a GPU device (CUDA or ROCm).")
     if device.index is None:
         device = torch.device("cuda:0")
 

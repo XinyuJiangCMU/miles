@@ -28,7 +28,10 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-FP8_INFO = torch.finfo(torch.float8_e4m3fn)
+# Always use e4m3fn for storage (standard/portable format).
+# AMD loads convert e4m3fn -> e4m3fnuz at runtime via normalize_e4m3fn_to_e4m3fnuz.
+_FP8_DTYPE = torch.float8_e4m3fn
+FP8_INFO = torch.finfo(_FP8_DTYPE)
 FP8_MAX, FP8_MIN = FP8_INFO.max, FP8_INFO.min
 
 
