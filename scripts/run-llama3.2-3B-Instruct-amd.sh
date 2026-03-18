@@ -171,7 +171,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    --num-gpus-per-node ${NUM_GPUS} \
    --colocate \
    --no-offload-train \
-   --gradient-checkpointing \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
