@@ -1,0 +1,16 @@
+{"prompt": "What is 2 + 3?", "label": "5"}
+{"prompt": "What is 7 * 8?", "label": "56"}
+{"prompt": "What is 15 - 9?", "label": "6"}
+{"prompt": "What is 100 / 4?", "label": "25"}
+{"prompt": "What is the square root of 144?", "label": "12"}
+{"prompt": "What is 3^4?", "label": "81"}
+{"prompt": "What is 17 + 28?", "label": "45"}
+{"prompt": "What is 999 - 111?", "label": "888"}
+{"prompt": "What is 12 * 12?", "label": "144"}
+{"prompt": "What is 256 / 16?", "label": "16"}
+{"prompt": "Solve: 3x + 5 = 20", "label": "x = 5"}
+{"prompt": "What is the area of a circle with radius 7?", "label": "49*pi or approximately 153.94"}
+{"prompt": "What is 2^10?", "label": "1024"}
+{"prompt": "What is the derivative of x^3?", "label": "3x^2"}
+{"prompt": "What is 45 + 67?", "label": "112"}
+{"prompt": "What is the GCD of 24 and 36?", "label": "12"}
