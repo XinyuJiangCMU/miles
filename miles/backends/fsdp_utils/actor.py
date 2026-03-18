@@ -715,6 +715,11 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
 
     logger.info(f"FSDP MixedPrecision Policy: param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")
 
+    # reshard_after_forward: True = free unsharded params after forward (save mem)
+    # For single-GPU (DP=1), disable resharding to avoid unnecessary all-gather in backward
+    dp_size = mesh.size() if mesh is not None else 1
+    reshard = True if dp_size > 1 else False
+
     fsdp_kwargs = {
         "mp_policy": MixedPrecisionPolicy(
             param_dtype=param_dtype,
@@ -722,6 +727,7 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         ),
         "offload_policy": offload_policy,
         "mesh": mesh,
+        "reshard_after_forward": reshard,
     }
 
     # Apply FSDP to each module (offload_policy=None is equivalent to not passing it)
