@@ -99,6 +99,7 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.3
    # Disable custom all-reduce on non-default GPU sets (hipIpcOpenMemHandle issue)
    --sglang-disable-custom-all-reduce
+   --sglang-cuda-graph-max-bs 256
 )
 
 FSDP_ARGS=(

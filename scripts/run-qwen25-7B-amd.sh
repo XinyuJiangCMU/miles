@@ -56,6 +56,7 @@ SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.25
    --sglang-disable-custom-all-reduce
+   --sglang-cuda-graph-max-bs 256
 )
 
 FSDP_ARGS=(
