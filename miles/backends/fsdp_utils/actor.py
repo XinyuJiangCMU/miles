@@ -113,12 +113,15 @@ class FSDPTrainRayActor(TrainRayActor):
             self.model.gradient_checkpointing_enable()
 
         if args.optimizer == "adam":
+            # Use fused AdamW for ~10% optimizer step speedup on GPU
+            use_fused = torch.cuda.is_available()
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(),
                 lr=args.lr,
                 betas=(args.adam_beta1, args.adam_beta2),
                 eps=args.adam_eps,
                 weight_decay=args.weight_decay,
+                fused=use_fused,
             )
         else:
             raise ValueError(f"Unsupported optimizer: {args.optimizer}. Supported options: 'adam'")

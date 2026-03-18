@@ -36,7 +36,7 @@ ROLLOUT_ARGS=(
 GRPO_ARGS=(
    --algorithm grpo
    --global-batch-size 2
-   --micro-batch-size 1
+   --micro-batch-size 2
    --seq-length 1024
    --eps-clip 0.2
    --eps-clip-high 0.28

@@ -69,6 +69,7 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 512
    --rollout-temperature 1
    --global-batch-size 64
+   --micro-batch-size 2
    --balance-data
 )
 
