@@ -14,3 +14,19 @@
 {"prompt": "What is the derivative of x^3?", "label": "3x^2"}
 {"prompt": "What is 45 + 67?", "label": "112"}
 {"prompt": "What is the GCD of 24 and 36?", "label": "12"}
+{"prompt": "What is 123 * 456?", "label": "56088"}
+{"prompt": "What is the integral of x^2 dx?", "label": "x^3/3 + C"}
+{"prompt": "What is sin(pi/2)?", "label": "1"}
+{"prompt": "What is log base 2 of 1024?", "label": "10"}
+{"prompt": "Solve: 2x^2 - 8 = 0", "label": "x = 2 or x = -2"}
+{"prompt": "What is the sum of first 100 natural numbers?", "label": "5050"}
+{"prompt": "What is 7! (7 factorial)?", "label": "5040"}
+{"prompt": "What is the hypotenuse of a right triangle with legs 3 and 4?", "label": "5"}
+{"prompt": "What is e^0?", "label": "1"}
+{"prompt": "What is the value of pi to 5 decimal places?", "label": "3.14159"}
+{"prompt": "What is the LCM of 12 and 18?", "label": "36"}
+{"prompt": "Simplify: (x^2 - 4) / (x - 2)", "label": "x + 2"}
+{"prompt": "What is 2^20?", "label": "1048576"}
+{"prompt": "What is the volume of a sphere with radius 3?", "label": "36*pi or approximately 113.1"}
+{"prompt": "Convert 72 degrees to radians", "label": "2*pi/5 or approximately 1.2566"}
+{"prompt": "What is the determinant of [[1,2],[3,4]]?", "label": "-2"}
