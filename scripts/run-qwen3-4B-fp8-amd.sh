@@ -101,6 +101,10 @@ SGLANG_ARGS=(
 FSDP_ARGS=(
    # MI300X has 192GB VRAM - use larger buffer for faster weight update
    --update-weight-buffer-size 1073741824  # 1GB
+   # Gradient checkpointing saves ~47% memory (163GB -> 86GB at BS=32)
+   --gradient-checkpointing
+   # Keep model on GPU (MI300X has enough VRAM)
+   --no-offload-train
 )
 
 # launch ray
