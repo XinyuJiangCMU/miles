@@ -713,7 +713,8 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
 
     # Determine precision policy based on args
     param_dtype = torch.bfloat16  # Default to bf16 as before
-    reduce_dtype = torch.float32
+    # Use bf16 reduce for RL training (acceptable precision, 2x less communication)
+    reduce_dtype = torch.bfloat16 if getattr(args, "bf16_reduce", False) else torch.float32
 
     if args.fp16:
         param_dtype = torch.float16
