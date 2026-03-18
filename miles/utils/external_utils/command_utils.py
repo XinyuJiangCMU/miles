@@ -173,6 +173,7 @@ def execute_train(
                         "HIP_FORCE_DEV_KERNARG": "1",
                         "HSA_NO_SCRATCH_RECLAIM": "1",
                         "GPU_MAX_HW_QUEUES": "2",
+                        "VLLM_FP8_PADDING": "1",  # FP8 weight padding for GEMM alignment
                     }
                     if not check_has_nvlink()
                     else {}
