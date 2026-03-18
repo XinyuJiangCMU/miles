@@ -133,9 +133,10 @@ class TrainRayActor(RayActor):
             logger.info(f"Warning: Failed to set NUMA affinity: {e}")
 
     def clear_memory(self):
-        print_memory("before TrainRayActor.clear_memory")
-        clear_memory()
-        print_memory("after TrainRayActor.clear_memory")
+        import torch
+        # Lightweight memory cleanup: skip synchronize+gc for faster turnaround
+        # The full clear_memory() with synchronize+gc.collect adds ~500ms overhead
+        torch.cuda.empty_cache()
 
     @abc.abstractmethod
     def sleep(self, tags):
