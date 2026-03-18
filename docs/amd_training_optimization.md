@@ -79,3 +79,34 @@ Use BF16 for gradient all-reduce communication. Halves bandwidth. Acceptable for
 |---|---|---|---|
 | Qwen2.5-7B (2x MI300X) | 1,382 tok/s | 1,703 tok/s | +23% |
 | Qwen3-30B-MoE FP8 (2x MI300X) | N/A | 5,344 tok/s | - |
+
+## Multi-GPU FSDP Tuning (DP>1)
+
+For multi-GPU data-parallel training on MI300X:
+
+```bash
+# RCCL tuning for multi-GPU
+export NCCL_BUFFSIZE=16777216  # 16MB buffer
+export NCCL_MIN_NCHANNELS=112  # More channels for XGMI
+export NCCL_ALGO=Ring           # Ring is faster than Tree for 2-8 GPUs
+
+# FSDP settings
+--bf16-reduce    # Halves gradient communication volume
+# Note: reshard_after_forward stays True for DP>1 (memory savings)
+
+# Memory considerations for colocate mode:
+# Actor model: ~8GB (Qwen3-4B in BF16)
+# Ref model: ~8GB (kept on GPU with --no-offload-train)
+# Optimizer: ~16GB (AdamW with momentum)
+# Activations: ~10-50GB (depends on batch size and GC)
+# SGLang inference: ~30-80GB (KV cache + CUDA graphs)
+# Total: ~72-162GB / 192GB available
+```
+
+## Known Limitations
+
+1. **FP8 forward training**: Not beneficial for dense models <30B (quantization overhead > GEMM savings)
+2. **Custom all-reduce**: AITER AR is slower than NCCL on MI300X. Keep disabled.
+3. **TunableOp**: +12% GEMM speedup but requires 10-30 min pre-tuning per model
+4. **Gradient checkpointing at DP=1**: Costs 24% speed for only 3% memory savings. Skip for DP=1.
+5. **FP8 KV cache**: Not supported (AITER mha_batch_prefill doesn't support FP8 input)
