@@ -182,3 +182,26 @@ Note: Super-linear scaling at large batch sizes is due to each GPU
 getting half the model parameters (more efficient GEMM with smaller
 per-rank weight matrices) + larger per-GPU batch = better HBM bandwidth
 utilization.
+
+## RL Training Pipeline Breakdown (Qwen3-4B, 1x MI300X)
+
+| Phase | Time | % of Step |
+|---|---|---|
+| Ref model forward (no_grad) | 58ms | 16% |
+| Actor model forward (no_grad) | 74ms | 20% |
+| Training (fwd+bwd+opt) | 232ms | 64% |
+| **Total per RL step** | **364ms** | **100%** |
+| **Throughput** | **5,626 tok/s** | |
+
+Weight update: ~2s (dominated by FSDP DTensor materialization).
+This happens once per training step, not per microbatch.
+
+## When to Use Each Optimization
+
+| Optimization | Use When | Don't Use When |
+|---|---|---|
+| --no-offload-train | MI300X 192GB VRAM | Small GPU (<64GB) |
+| --gradient-checkpointing | Colocate mode (need room for SGLang) | DP=1 standalone training |
+| --micro-batch-size 4+ | Single GPU training | Already memory-constrained |
+| --bf16-reduce | DP>1 with bandwidth constraints | Accuracy-sensitive tasks |
+| --compile-log-probs | Many rollouts (60+) | Quick tests (<10 rollouts) |
