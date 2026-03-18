@@ -231,3 +231,16 @@ This happens once per training step, not per microbatch.
 |---|---|---|---|---|
 | 2 | 5.95s | 1.39s | 0.37s | 4.55s |
 | 4 | 4.28s | 0.99s | 0.28s | 3.28s |
+
+### Megatron Backend RL Training (2x MI300X TP=2)
+
+| Metric | Value |
+|---|---|
+| step_time | 4.99s |
+| actor_train | 27.4 TFLOP/s |
+| log_probs | 22.7 TFLOP/s |
+| update_weights | 0.23s |
+| wait_time | 3.65s |
+
+Note: Requires `get_device_arch_version` patch for AMD/Ray compatibility.
+Use `--load` with pre-converted Megatron checkpoint.
