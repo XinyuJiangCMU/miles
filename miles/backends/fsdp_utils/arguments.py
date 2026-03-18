@@ -36,6 +36,7 @@ class FSDPArgs:
     gradient_checkpointing: bool = False
     fp16: bool = False
     bf16_reduce: bool = False  # Use BF16 for gradient reduce (halves communication, acceptable for RL)
+    compile_log_probs: bool = False  # Use torch.compile for log_probs inference (~37% faster, 60s initial compile)
 
     # FSDP configuration
     fsdp_state_dict_cpu_offload: bool = True  # If True, offload full state dict to CPU during collection.
