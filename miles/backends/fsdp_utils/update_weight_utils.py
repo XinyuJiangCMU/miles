@@ -116,10 +116,12 @@ class UpdateWeightFromTensor(UpdateWeight):
                 # Calculate TP rank within this SGLang engine group
                 self.tp_rank = dist.get_rank() - start_rank
 
+    _monkey_patched = False
+
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
-        monkey_patch_torch_reductions()
-        # Use flattened bucket approach similar to Megatron
-        logger.info("Using flattened tensor bucket")
+        if not UpdateWeightFromTensor._monkey_patched:
+            monkey_patch_torch_reductions()
+            UpdateWeightFromTensor._monkey_patched = True
         # Group tensors by dtype (same as Megatron)
         named_tensors_by_dtypes = {}
         for name, tensor in named_tensors:
@@ -156,9 +158,10 @@ class UpdateWeightFromTensor(UpdateWeight):
         if dist.get_rank() == self._ipc_gather_src:
             # Handle flattened bucket format (same as Megatron approach)
             # Each rank may have multiple dtype buckets
-            # TODO: here we assume all ranks have the same number of dtypes
+            # Fire all RPCs concurrently, then wait for all (reduces round-trip overhead)
             num_dtypes = len(gathered_serialized_batches[0])
             assert num_dtypes > 0
+            refs = []
             for i in range(num_dtypes):
                 kwargs = {
                     "serialized_named_tensors": [tensors[i] for tensors in gathered_serialized_batches],
@@ -166,8 +169,8 @@ class UpdateWeightFromTensor(UpdateWeight):
                     "flush_cache": False,
                     "weight_version": str(weight_version),
                 }
-                ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
-                ray.get(ref)
+                refs.append(self._ipc_engine.update_weights_from_tensor.remote(**kwargs))
+            ray.get(refs)
 
         if dist.get_rank() == self._ipc_gather_src:
             ref = self._ipc_engine.flush_cache.remote()

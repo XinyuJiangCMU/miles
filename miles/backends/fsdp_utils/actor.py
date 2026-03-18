@@ -334,7 +334,9 @@ class FSDPTrainRayActor(TrainRayActor):
         """
         # Select which model to use
         if model_tag == "ref" and self.ref_model is not None:
-            if not self.fsdp_cpu_offload:
+            if not self.fsdp_cpu_offload and not getattr(self.args, "no_offload_train", False):
+                # Offload actor model to CPU to make room for ref model
+                # Skip this on MI300X (192GB VRAM) where both models fit in GPU
                 self.model.cpu()
                 torch.cuda.empty_cache()
                 dist.barrier(group=get_gloo_group())
@@ -403,8 +405,9 @@ class FSDPTrainRayActor(TrainRayActor):
         finally:
             # Restore actor model if it was offloaded
             if model_tag == "ref" and self.ref_model is not None:
-                torch.cuda.empty_cache()
-                dist.barrier(group=get_gloo_group())
+                if not getattr(self.args, "no_offload_train", False):
+                    torch.cuda.empty_cache()
+                    dist.barrier(group=get_gloo_group())
 
                 if not self.fsdp_cpu_offload:
                     self.model.cuda()
