@@ -161,8 +161,16 @@ def execute_train(
                     }
                 ),
                 "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
-                # AMD/ROCm: enable CUDA graph compatible memory saver
-                **({"SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true"} if not check_has_nvlink() else {}),
+                # AMD/ROCm: enable CUDA graph compatible memory saver + TunableOp
+                **(
+                    {
+                        "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
+                        "PYTORCH_TUNABLEOP_ENABLED": "1",
+                        "PYTORCH_TUNABLEOP_TUNING": "1",
+                    }
+                    if not check_has_nvlink()
+                    else {}
+                ),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
