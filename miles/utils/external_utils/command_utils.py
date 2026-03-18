@@ -167,6 +167,7 @@ def execute_train(
                         "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
                         "PYTORCH_TUNABLEOP_ENABLED": "1",
                         "PYTORCH_TUNABLEOP_TUNING": "1",
+                        "PYTORCH_HIP_ALLOC_CONF": "expandable_segments:True",
                     }
                     if not check_has_nvlink()
                     else {}
