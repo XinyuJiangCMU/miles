@@ -596,7 +596,9 @@ class FSDPTrainRayActor(TrainRayActor):
                     f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
                 )
 
-        clear_memory()
+        # Use lightweight cleanup instead of full clear_memory()
+        # (clear_memory calls synchronize + gc.collect + empty_cache which is slow)
+        torch.cuda.empty_cache()
 
     def _create_ref_model(self, ref_load_path: str | None):
         """Create and initialize a separate reference model with FSDP2 CPUOffloadPolicy.

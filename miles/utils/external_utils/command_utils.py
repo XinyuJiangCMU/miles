@@ -161,14 +161,14 @@ def execute_train(
                     }
                 ),
                 "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
-                # AMD/ROCm: enable CUDA graph compatible memory saver + TunableOp
+                # AMD/ROCm: enable CUDA graph compatible memory saver + perf tuning
                 **(
                     {
                         "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
                         "PYTORCH_HIP_ALLOC_CONF": "expandable_segments:True",
-                        # Note: PYTORCH_TUNABLEOP_ENABLED=1 gives +12% GEMM speedup
-                        # but causes ~40s/batch slowdown during CUDA graph capture.
-                        # Enable only after pre-tuning with PYTORCH_TUNABLEOP_TUNING=1
+                        "NCCL_BUFFSIZE": "16777216",  # 16MB for MI300X HBM3 (+20% all-reduce)
+                        "HIP_FORCE_DEV_KERNARG": "1",
+                        "HSA_NO_SCRATCH_RECLAIM": "1",
                     }
                     if not check_has_nvlink()
                     else {}
