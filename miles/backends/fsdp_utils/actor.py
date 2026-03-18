@@ -350,7 +350,7 @@ class FSDPTrainRayActor(TrainRayActor):
             forward_data_store = []
             data_iterator.reset()
 
-            with timer(f"{store_prefix}log_probs"), torch.inference_mode():
+            with timer(f"{store_prefix}log_probs"), torch.no_grad():
                 num_steps_per_rollout = len(num_microbatches)
                 for step_id in range(num_steps_per_rollout):
                     for _ in self.prof.iterate_train_log_probs(
