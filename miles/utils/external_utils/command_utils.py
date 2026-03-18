@@ -137,7 +137,10 @@ def execute_train(
         # Auto-set AMD/ROCm env vars for Ray if on AMD and not already set
         amd_env = ""
         if not check_has_nvlink() and not os.environ.get("RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"):
-            amd_env = "export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 && "
+            amd_env = (
+                "export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 && "
+                "export SGLANG_USE_AITER=${SGLANG_USE_AITER:-1} && "
+            )
         exec_command(
             # will prevent ray from buffering stdout/stderr
             f"export PYTHONBUFFERED=16 && "
