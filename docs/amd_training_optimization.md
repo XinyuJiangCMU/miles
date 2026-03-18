@@ -257,3 +257,14 @@ Use `--load` with pre-converted Megatron checkpoint.
 
 Non-colocate is 15% faster than colocate mode because there's no
 memory saver pause/resume overhead.
+
+### Async Training (train_async.py, non-colocate)
+
+| Metric | Sync | Async | Improvement |
+|---|---|---|---|
+| step_time | 3.62s | **2.63s** | **-27%** |
+| wait_time | 2.70s | 1.69s | -37% |
+| train_time | 0.92s | 0.94s | same |
+
+Async mode overlaps next rollout with current training,
+hiding most of the rollout latency.
