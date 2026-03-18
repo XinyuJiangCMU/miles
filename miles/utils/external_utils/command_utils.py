@@ -169,6 +169,7 @@ def execute_train(
                         "NCCL_BUFFSIZE": "16777216",  # 16MB for MI300X HBM3 (+20% all-reduce)
                         "HIP_FORCE_DEV_KERNARG": "1",
                         "HSA_NO_SCRATCH_RECLAIM": "1",
+                        "GPU_MAX_HW_QUEUES": "2",
                     }
                     if not check_has_nvlink()
                     else {}
