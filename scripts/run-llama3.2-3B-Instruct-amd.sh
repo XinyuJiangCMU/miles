@@ -18,19 +18,22 @@ set -euxo pipefail
 MILES_DIR="${MILES_DIR:-/home/yushensu/projects/miles}" # Default path if not set in environment
 export MILES_DIR
 
-MODEL_DIR="${MODEL_DIR:-/home/yushensu/projects/model}" # Default path if not set in environment
+MODEL_DIR="${MODEL_DIR:-/data}"
 export MODEL_DIR
 
-DATA_DIR="${DATA_DIR:-/home/yushensu/projects/data}"  # Default path if not set in environment
+DATA_DIR="${DATA_DIR:-/data}"
 export DATA_DIR
 
 # For AMD GPU
-export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES:-"1"} # Must set to 1
+export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES:-"1"}
 # AMD performance tuning
 export HIP_FORCE_DEV_KERNARG=1
 export NCCL_BUFFSIZE=16777216  # 16MB for MI300X HBM3
 export HSA_NO_SCRATCH_RECLAIM=1
-export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"} #You can choose which gpus to use
+export GPU_MAX_HW_QUEUES=2
+export SGLANG_USE_AITER=1
+export PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
+export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"}
 ####################
 
 # will prevent ray from buffering stdout/stderr
