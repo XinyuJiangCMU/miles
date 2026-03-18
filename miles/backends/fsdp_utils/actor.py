@@ -61,8 +61,14 @@ class FSDPTrainRayActor(TrainRayActor):
         torch.manual_seed(args.seed)
 
         # Enable BF16 reduced precision GEMM for ~10% training speedup
-        # Acceptable for RL training where slight numerical differences don't matter
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
+
+        # AMD/ROCm diagnostics
+        if torch.version.hip is not None:
+            gpu_name = torch.cuda.get_device_name(0)
+            free, total = torch.cuda.mem_get_info(0)
+            logger.info(f"[AMD] GPU: {gpu_name}, VRAM: {total/1024**3:.0f}GB, Free: {free/1024**3:.0f}GB")
+            logger.info(f"[AMD] ROCm: {torch.version.hip}, PyTorch: {torch.__version__}")
 
         self.train_parallel_config = {
             "dp_size": self.parallel_state.dp_size,
