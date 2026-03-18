@@ -268,3 +268,35 @@ memory saver pause/resume overhead.
 
 Async mode overlaps next rollout with current training,
 hiding most of the rollout latency.
+
+## Recommended RL Training Configurations
+
+### Small Model (4B) on 2 GPUs
+```bash
+# Colocate mode (shared GPUs)
+HIP_VISIBLE_DEVICES=0,1 bash scripts/run-qwen3-4B-fp8-amd.sh
+# Expected: ~5.95s/step
+```
+
+### Small Model (4B) on 8 GPUs
+```bash
+# Non-colocate async (4 train + 4 inference)
+# Use train_async.py for best performance
+# Expected: ~2.63s/step
+```
+
+### Medium Model (7B) on 2 GPUs
+```bash
+# Colocate mode
+HIP_VISIBLE_DEVICES=0,1 bash scripts/run-qwen25-7B-amd.sh
+# Expected: ~6.78s/step
+```
+
+### Megatron Backend (4B, TP=2)
+```bash
+# 1. Convert model first
+HIP_VISIBLE_DEVICES=0,1 torchrun --nproc-per-node 2 tools/convert_hf_to_torch_dist.py ...
+# 2. Then train with --load
+HIP_VISIBLE_DEVICES=0,1 bash scripts/run-qwen3-4B-megatron-amd.sh
+# Expected: ~4.99s/step
+```
