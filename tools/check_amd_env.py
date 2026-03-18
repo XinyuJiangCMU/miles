@@ -89,6 +89,9 @@ def main():
     check("HIP_VISIBLE_DEVICES", lambda: os.environ.get("HIP_VISIBLE_DEVICES", "not set"))
     check("RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES", lambda: os.environ.get("RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES", "not set"))
     check("SGLANG_MEMORY_SAVER_CUDA_GRAPH", lambda: os.environ.get("SGLANG_MEMORY_SAVER_CUDA_GRAPH", "not set"))
+    check("NCCL_BUFFSIZE", lambda: os.environ.get("NCCL_BUFFSIZE", "not set (recommend 16777216)"))
+    check("PYTORCH_HIP_ALLOC_CONF", lambda: os.environ.get("PYTORCH_HIP_ALLOC_CONF", "not set (recommend expandable_segments:True)"))
+    check("SGLANG_USE_AITER", lambda: os.environ.get("SGLANG_USE_AITER", "not set (recommend 1)"))
 
     print(f"\n=== Results: {passed} passed, {failed} failed ===")
     return 0 if failed == 0 else 1
