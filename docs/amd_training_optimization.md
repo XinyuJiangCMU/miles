@@ -161,3 +161,24 @@ This is informational only. On AMD, NUMA affinity is set via ROCm sysfs instead.
 - [ ] `--micro-batch-size 2` or higher
 - [ ] `--sglang-disable-custom-all-reduce` to avoid hipIpc issues
 - [ ] Flash Attention 2 is being used (`attn_implementation="flash_attention_2"`)
+
+## Multi-GPU Benchmark Results (Qwen3-4B, 2x MI300X DP=2)
+
+| MBS/GPU | Total tok/s | vs 1-GPU | Scaling |
+|---|---|---|---|
+| 4 | 9,762 | 1.16x | 58% |
+| 8 | 14,766 | 1.75x | 88% |
+| **16** | **20,162** | **2.39x** | **120%** |
+
+## Multi-GPU Benchmark Results (Qwen2.5-7B, 2x MI300X DP=2)
+
+| MBS/GPU | Total tok/s | vs 1-GPU | Scaling |
+|---|---|---|---|
+| 2 | 6,360 | 1.12x | 56% |
+| 4 | 10,703 | 1.88x | 94% |
+| **8** | **14,516** | **2.56x** | **128%** |
+
+Note: Super-linear scaling at large batch sizes is due to each GPU
+getting half the model parameters (more efficient GEMM with smaller
+per-rank weight matrices) + larger per-GPU batch = better HBM bandwidth
+utilization.
