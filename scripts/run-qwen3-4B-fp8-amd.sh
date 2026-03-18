@@ -123,6 +123,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-gpus-per-node ${NUM_GPUS} \
    --num-gpus-per-node ${NUM_GPUS} \
    --colocate \
+   --no-offload-train \
    --train-backend fsdp \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
