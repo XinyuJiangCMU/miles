@@ -110,3 +110,54 @@ export NCCL_ALGO=Ring           # Ring is faster than Tree for 2-8 GPUs
 3. **TunableOp**: +12% GEMM speedup but requires 10-30 min pre-tuning per model
 4. **Gradient checkpointing at DP=1**: Costs 24% speed for only 3% memory savings. Skip for DP=1.
 5. **FP8 KV cache**: Not supported (AITER mha_batch_prefill doesn't support FP8 input)
+
+## Troubleshooting
+
+### Common Issues
+
+**1. "normalize_e4m3fn_to_e4m3fnuz: assertion error"**
+```
+AssertionError: weight.dtype == torch.float8_e4m3fn
+```
+Fix: Update to latest fp8-miles-amd-dev branch. We handle both e4m3fn and e4m3fnuz.
+
+**2. "hipIpcOpenMemHandle failed"**
+```
+RuntimeError: hipIpcOpenMemHandle failed
+```
+Fix: Add `--sglang-disable-custom-all-reduce` to training args. Custom all-reduce has issues with non-contiguous GPU IDs.
+
+**3. OOM during CUDA graph capture**
+```
+RuntimeError: HIP out of memory during graph capture
+```
+Fix: Add `--cuda-graph-max-bs 256` to SGLang server args, or `--disable-cuda-graph` for MoE models.
+
+**4. "fused_set_kv_buffer_arg" error**
+```
+ValueError: fused_set_kv_buffer requires CUDA sgl_kernel op
+```
+Fix: This is expected on AMD. The `utils.py _is_cuda` check disables fused KV buffer on AMD.
+
+**5. Slow training with --offload-train**
+```
+Step time: 12+ seconds
+```
+Fix: Use `--no-offload-train` on MI300X (192GB VRAM is sufficient for most models).
+
+**6. "pynvml not available"**
+```
+Warning: pynvml not available, skipping NUMA affinity setup
+```
+This is informational only. On AMD, NUMA affinity is set via ROCm sysfs instead.
+
+### Performance Checklist
+
+- [ ] `HIP_VISIBLE_DEVICES` is set correctly
+- [ ] `SGLANG_USE_AITER=1` for AITER attention backend
+- [ ] `NCCL_BUFFSIZE=16777216` for 16MB RCCL buffer
+- [ ] `PYTORCH_HIP_ALLOC_CONF=expandable_segments:True`
+- [ ] `--no-offload-train` for MI300X 192GB
+- [ ] `--micro-batch-size 2` or higher
+- [ ] `--sglang-disable-custom-all-reduce` to avoid hipIpc issues
+- [ ] Flash Attention 2 is being used (`attn_implementation="flash_attention_2"`)
