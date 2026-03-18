@@ -38,6 +38,45 @@ def patch_weight_to_mcore_format_preserve_fp32():
     print("[Patch] Applied patch to preserve FP32 precision in _weight_to_mcore_format")
 
 
+def patch_mbridge_vocab_padding(padded_vocab_size, vocab_size):
+    """Monkey-patch mbridge to handle vocab padding for TP>1 conversion.
+
+    When TP>1, Megatron pads the vocab to be divisible by TP * make_vocab_size_divisible_by.
+    The mbridge scatter expects the full padded tensor, but HF weights are unpadded.
+    This patch pads embedding/output_layer weights before mbridge processes them.
+    """
+    if padded_vocab_size == vocab_size:
+        return
+
+    original_method = Bridge._weight_to_mcore_format
+
+    @wraps(original_method)
+    def patched_method(self, mcore_weights_name, hf_weights):
+        # Pad embedding and output layer weights to padded_vocab_size
+        if len(hf_weights) == 1 and (
+            "embedding.word_embeddings.weight" in mcore_weights_name
+            or "output_layer.weight" in mcore_weights_name
+        ):
+            w = hf_weights[0]
+            if w.shape[0] == vocab_size and w.shape[0] < padded_vocab_size:
+                pad_size = padded_vocab_size - vocab_size
+                padding = torch.zeros(
+                    (pad_size, w.shape[1]), device=w.device, dtype=w.dtype
+                )
+                hf_weights = [torch.cat([w, padding], dim=0)]
+                print(
+                    f"[Patch] Padded {mcore_weights_name}: "
+                    f"{vocab_size} -> {padded_vocab_size}"
+                )
+        return original_method(self, mcore_weights_name, hf_weights)
+
+    Bridge._weight_to_mcore_format = patched_method
+    print(
+        f"[Patch] Applied vocab padding patch: "
+        f"{vocab_size} -> {padded_vocab_size}"
+    )
+
+
 def add_convertion_args(parser):
     """Add conversion arguments to the parser"""
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
@@ -134,6 +173,10 @@ def main():
 
     # Patch to preserve FP32 precision for _keep_fp32 params
     patch_weight_to_mcore_format_preserve_fp32()
+
+    # Patch to handle vocab padding for TP>1
+    if args.padded_vocab_size and args.padded_vocab_size != args.vocab_size:
+        patch_mbridge_vocab_padding(args.padded_vocab_size, args.vocab_size)
 
     bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")
