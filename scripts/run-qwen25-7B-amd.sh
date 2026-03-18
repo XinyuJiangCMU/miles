@@ -60,7 +60,7 @@ SGLANG_ARGS=(
 )
 
 FSDP_ARGS=(
-   --update-weight-buffer-size 1073741824
+   --update-weight-buffer-size 2147483648
    --gradient-checkpointing
    --no-offload-train
 )
