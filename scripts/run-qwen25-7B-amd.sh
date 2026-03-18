@@ -4,6 +4,7 @@ set -e
 
 # AMD Performance Tuning
 export HIP_FORCE_DEV_KERNARG=1
+export NCCL_BUFFSIZE=16777216  # 16MB for MI300X HBM3
 export HSA_NO_SCRATCH_RECLAIM=1
 export GPU_MAX_HW_QUEUES=2
 export SGLANG_USE_AITER=1
