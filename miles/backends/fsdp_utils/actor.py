@@ -69,6 +69,9 @@ class FSDPTrainRayActor(TrainRayActor):
             free, total = torch.cuda.mem_get_info(0)
             logger.info(f"[AMD] GPU: {gpu_name}, VRAM: {total/1024**3:.0f}GB, Free: {free/1024**3:.0f}GB")
             logger.info(f"[AMD] ROCm: {torch.version.hip}, PyTorch: {torch.__version__}")
+            # Recommend --no-offload-train for MI300X (192GB)
+            if total / 1024**3 > 128 and getattr(args, "offload_train", False):
+                logger.info("[AMD] Tip: MI300X has enough VRAM for --no-offload-train (saves ~48% step time)")
 
         self.train_parallel_config = {
             "dp_size": self.parallel_state.dp_size,
