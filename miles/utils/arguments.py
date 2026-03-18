@@ -1874,7 +1874,9 @@ def hf_validate_args(args, hf_config):
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
         (
             "rms_norm_eps",
-            "norm_epsilon" if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1" else "layernorm_epsilon",
+            # Megatron maps --norm-epsilon to layernorm_epsilon internally;
+            # FSDP backend may only have norm_epsilon. Check both.
+            "layernorm_epsilon" if hasattr(args, "layernorm_epsilon") else "norm_epsilon",
             equal,
         ),
         ("rope_theta", "rotary_base", equal),

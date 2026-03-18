@@ -240,9 +240,9 @@ class UpdateWeightFromDistributed(UpdateWeight):
         ]
 
         handles = []
-        # Broadcast parameters one by one with memory management
+        # Broadcast parameters with batched async ops
+        # Note: avoid per-parameter empty_cache() which causes GPU sync stalls
         for _name, param in named_tensors:
-            torch.cuda.empty_cache()
             # Ensure tensor is contiguous and on the right device
             param_data = param.data.contiguous()
 

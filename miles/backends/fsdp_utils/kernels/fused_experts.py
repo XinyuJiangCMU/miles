@@ -77,7 +77,7 @@ class GateUpProjFunction(torch.autograd.Function):
         E, N, _ = w1.shape
         # We execute the fused_moe kernel in chunks to circumvent this issue:
         # https://github.com/vllm-project/vllm/issues/5938
-        CHUNK_SIZE = 64 * 1024
+        CHUNK_SIZE = 128 * 1024 if _IS_AMD else 64 * 1024
 
         config = _DEFAULT_MOE_CONFIG
 
@@ -156,7 +156,8 @@ class GateUpProjFunction(torch.autograd.Function):
         topk = ctx.topk
 
         E, N, D_in = w1.shape
-        CHUNK_SIZE = 64 * 1024
+        # MI300X has 192GB HBM3, can handle larger chunks to avoid multi-chunk overhead
+        CHUNK_SIZE = 128 * 1024 if _IS_AMD else 64 * 1024
 
         # Initialize gradient tensors
         grad_hidden_states = torch.zeros_like(hidden_states)
@@ -261,7 +262,7 @@ class DownProjFunction(torch.autograd.Function):
         E, _, _ = w2.shape
         # We execute the fused_moe kernel in chunks to circumvent this issue:
         # https://github.com/vllm-project/vllm/issues/5938
-        CHUNK_SIZE = 64 * 1024
+        CHUNK_SIZE = 128 * 1024 if _IS_AMD else 64 * 1024
 
         config = _DEFAULT_MOE_CONFIG
 
@@ -336,7 +337,7 @@ class DownProjFunction(torch.autograd.Function):
         topk = ctx.topk
 
         E, hidden_size, intermediate_size = w2.shape
-        CHUNK_SIZE = 64 * 1024
+        CHUNK_SIZE = 128 * 1024 if _IS_AMD else 64 * 1024
 
         # Initialize gradient tensors
         grad_intermediate_cache2 = torch.zeros_like(intermediate_cache2)
