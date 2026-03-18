@@ -244,3 +244,16 @@ This happens once per training step, not per microbatch.
 
 Note: Requires `get_device_arch_version` patch for AMD/Ray compatibility.
 Use `--load` with pre-converted Megatron checkpoint.
+
+### Non-Colocate Mode (4 train + 4 inference GPUs)
+
+| Metric | Value |
+|---|---|
+| step_time | 3.62s |
+| train_time | 0.92s |
+| update_weights | 0.70s |
+| wait_time | 2.70s |
+| prefix_cache_hit | 94.5% |
+
+Non-colocate is 15% faster than colocate mode because there's no
+memory saver pause/resume overhead.
