@@ -1,8 +1,33 @@
 import logging
 import os
 
+import torch
 from megatron.training.arguments import parse_args, validate_args
 from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
+
+# Patch Megatron's get_device_arch_version to handle AMD/ROCm
+# On AMD, this function may fail if GPU is not available at parse time (e.g., in Ray)
+if torch.version.hip is not None:
+    try:
+        import megatron.training.utils as _mutils
+
+        _orig_get_device_arch = _mutils.get_device_arch_version
+
+        def _safe_get_device_arch_version():
+            try:
+                return _orig_get_device_arch()
+            except RuntimeError:
+                # On AMD in Ray, GPU may not be available during argument parsing
+                # Return 9 (MI300X is gfx942, similar to SM 9.x)
+                return 9
+
+        _mutils.get_device_arch_version = _safe_get_device_arch_version
+        # Also patch in the arguments module which imports it
+        import megatron.training.arguments as _margs
+
+        _margs.get_device_arch_version = _safe_get_device_arch_version
+    except Exception:
+        pass
 
 __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 
