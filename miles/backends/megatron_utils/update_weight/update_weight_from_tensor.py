@@ -135,10 +135,14 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
+        all_refs = []
+        all_tensors = []
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
-            ray.get(refs)
-            del long_lived_tensors
+            all_refs.extend(refs)
+            all_tensors.append(long_lived_tensors)
+        ray.get(all_refs)
+        del all_tensors
 
         dist.barrier(group=get_gloo_group())
 
