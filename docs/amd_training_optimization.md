@@ -205,3 +205,29 @@ This happens once per training step, not per microbatch.
 | --micro-batch-size 4+ | Single GPU training | Already memory-constrained |
 | --bf16-reduce | DP>1 with bandwidth constraints | Accuracy-sensitive tasks |
 | --compile-log-probs | Many rollouts (60+) | Quick tests (<10 rollouts) |
+
+## Complete Scaling Results (Session 6)
+
+### Qwen3-4B on MI300X (tok/s)
+
+| GPUs | MBS=4 | MBS=8 | MBS=16 | MBS=32 |
+|---|---|---|---|---|
+| 1 | 7,923 | 10,078 | 11,607 | 12,726 |
+| 2 | 9,807 | 14,719 | 20,024 | 23,508 |
+| 4 | 26,259 | 37,337 | 44,218 | 48,889 |
+| **8** | **57,654** | **76,391** | **88,612** | **96,430** |
+
+### Qwen2.5-7B on MI300X (tok/s)
+
+| GPUs | MBS=4 | MBS=8 | MBS=16 | MBS=32 |
+|---|---|---|---|---|
+| 2 | 6,344 | 10,737 | 14,522 | 16,925 |
+| 4 | 16,322 | 26,731 | 33,116 | 36,081 |
+| **8** | **43,460** | **58,242** | **66,258** | **71,210** |
+
+### Full RL Training (colocate mode)
+
+| GPUs | step_time | train_time | update_wt | wait_time |
+|---|---|---|---|---|
+| 2 | 5.95s | 1.39s | 0.37s | 4.55s |
+| 4 | 4.28s | 0.99s | 0.28s | 3.28s |
