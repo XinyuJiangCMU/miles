@@ -749,4 +749,16 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
     # Apply FSDP to the top-level model
     fully_shard(model, **fsdp_kwargs)
 
+    # Enable communication/computation overlap via prefetching
+    # For DP>1, this overlaps all-gather with forward computation
+    if dp_size > 1 and len(modules) > 1:
+        from torch.distributed.fsdp import FSDPModule
+
+        fsdp_modules = [m for m in model.modules() if isinstance(m, FSDPModule)]
+        if len(fsdp_modules) > 1:
+            # Each module prefetches the next module's params
+            for i in range(len(fsdp_modules) - 1):
+                fsdp_modules[i].set_modules_to_forward_prefetch([fsdp_modules[i + 1]])
+                fsdp_modules[i + 1].set_modules_to_backward_prefetch([fsdp_modules[i]])
+
     return model
