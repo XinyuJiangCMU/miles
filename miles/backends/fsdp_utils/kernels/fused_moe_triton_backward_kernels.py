@@ -52,91 +52,93 @@ def fused_moe_backward_input_kernel(
     compute_type: tl.constexpr,
 ):
     """
-    Backward kernel for computing grad_input.
+    Optimized backward kernel for computing grad_input.
 
     Forward: output = input @ weight.T (optionally multiplied by topk_weights)
     Backward: grad_input = grad_output @ weight (optionally multiplied by topk_weights)
 
-    This kernel computes: grad_input[token] = sum_over_N(grad_output[token, n] * weight[expert, n, :])
-    If MUL_ROUTED_WEIGHT: grad_input[token] *= topk_weights[token]
+    KEY OPTIMIZATION vs old kernel (AMD MI300X):
+    Old: 2D (M×N) grid → each (pid_m, pid_n) writes partial sum → needs cdiv(N,BLOCK_N) atomic_adds
+    New: 2D (M×K) grid → each (pid_m, pid_k) loops over N, writes full sum → only top_k atomic_adds
 
-    Parallelization: Similar to forward, parallel over M and N dimensions, loop over K.
+    For Qwen3-30B (top_k=8, N=768, BLOCK_N=128):
+      Old: 8 experts × 6 N-blocks = 48 atomic_adds per (base_token, k)
+      New: 8 experts × 1 = 8 atomic_adds per (base_token, k) → 6x reduction
+
+    On AMD MI300X, atomic_add serialization is expensive, so this gives significant speedup.
     """
-    # Map program ids to blocks (parallel over M and N, similar to forward)
-    pid = tl.program_id(axis=0)
-    num_pid_m = tl.cdiv(EM, BLOCK_SIZE_M)
-    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    group_id = pid // num_pid_in_group
-    first_pid_m = group_id * GROUP_SIZE_M
-    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
-    pid_n = (pid % num_pid_in_group) // group_size_m
+    # 2D grid: pid_m over M dimension, pid_k over K dimension
+    pid_m = tl.program_id(axis=0)
+    pid_k = tl.program_id(axis=1)
 
     # Check bounds
     num_tokens_post_padded = tl.load(num_tokens_post_padded_ptr)
+    if pid_m * BLOCK_SIZE_M >= num_tokens_post_padded:
+        return
 
-    # Only process if this block is valid
-    if pid_m * BLOCK_SIZE_M < num_tokens_post_padded:
-        # Load token information
-        offs_token_id = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M).to(tl.int64)
-        offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
-        offs_token = offs_token.to(tl.int64)
-        token_mask = offs_token < num_valid_tokens
+    # Load token information for this M block
+    offs_token_id = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M).to(tl.int64)
+    offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
+    offs_token = offs_token.to(tl.int64)
+    token_mask = offs_token < num_valid_tokens
 
-        # Get expert ID for this block
-        off_experts = tl.load(expert_ids_ptr + pid_m).to(tl.int64)
+    # Get expert ID for this M block
+    off_experts = tl.load(expert_ids_ptr + pid_m).to(tl.int64)
+    if off_experts == -1:
+        return
 
-        # Only process if expert is valid
-        if off_experts != -1:
-            # Initialize offsets for N dimension (current block)
-            offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N).to(tl.int64)
-            offs_k = tl.arange(0, BLOCK_SIZE_K)
+    # K offsets for this block
+    offs_k = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K).to(tl.int64)
+    k_mask = offs_k < K
 
-            # Load grad_output block: shape (BLOCK_SIZE_M, BLOCK_SIZE_N)
-            grad_output_ptrs = grad_output_ptr + (offs_token[:, None] * stride_gom + offs_n[None, :] * stride_gon)
-            grad_out = tl.load(
-                grad_output_ptrs,
-                mask=token_mask[:, None] & (offs_n[None, :] < N),
-                other=0.0,
-            )
+    # Accumulator for grad_input: (BLOCK_M, BLOCK_K) — accumulate over all N
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_K), dtype=tl.float32)
 
-            # Apply topk_weights to grad_output if needed
-            if MUL_ROUTED_WEIGHT:
-                moe_weight = tl.load(topk_weights_ptr + offs_token, mask=token_mask, other=0)
-                grad_out = grad_out * moe_weight[:, None]
+    # Pre-load topk_weights once (if needed) — outside N loop to avoid redundant loads
+    # Cast to float32 to avoid dtype promotion issues when topk_weights may be fp32
+    if MUL_ROUTED_WEIGHT:
+        moe_weight = tl.load(topk_weights_ptr + offs_token, mask=token_mask, other=0).to(tl.float32)
 
-            # Iterate over K dimension
-            for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-                # Current K offsets
-                curr_offs_k = k * BLOCK_SIZE_K + offs_k
+    # Loop over N dimension (serial — avoids N-parallel atomic_adds)
+    offs_n = tl.arange(0, BLOCK_SIZE_N)
+    for n in range(0, tl.cdiv(N, BLOCK_SIZE_N)):
+        curr_offs_n = n * BLOCK_SIZE_N + offs_n
+        n_mask = curr_offs_n < N
 
-                # Load weight block: shape (BLOCK_SIZE_N, BLOCK_SIZE_K)
-                # weight: shape (E, N, K)
-                weight_ptrs = (
-                    weight_ptr
-                    + off_experts * stride_we
-                    + offs_n[:, None] * stride_wn
-                    + curr_offs_k[None, :] * stride_wk
-                )
-                w = tl.load(
-                    weight_ptrs,
-                    mask=(offs_n[:, None] < N) & (curr_offs_k[None, :] < K),
-                    other=0.0,
-                )
+        # Load grad_output block: (BLOCK_M, BLOCK_N)
+        grad_output_ptrs = grad_output_ptr + (offs_token[:, None] * stride_gom + curr_offs_n[None, :] * stride_gon)
+        grad_out = tl.load(
+            grad_output_ptrs,
+            mask=token_mask[:, None] & n_mask[None, :],
+            other=0.0,
+        )
 
-                # Compute contribution: grad_out @ weight
-                # grad_out: (BLOCK_SIZE_M, BLOCK_SIZE_N)
-                # w: (BLOCK_SIZE_N, BLOCK_SIZE_K)
-                # result: (BLOCK_SIZE_M, BLOCK_SIZE_K)
-                contribution = tl.dot(grad_out, w)
+        # Apply topk_weights: multiply in fp32 then cast back to compute_type to avoid dtype promotion
+        if MUL_ROUTED_WEIGHT:
+            grad_out = (grad_out.to(tl.float32) * moe_weight[:, None]).to(compute_type)
 
-                # Atomic add to grad_input because different N blocks contribute to same K
-                grad_input_ptrs = grad_input_ptr + (
-                    (offs_token[:, None] // top_k) * stride_gim + curr_offs_k[None, :] * stride_gik
-                )
-                grad_input_mask = token_mask[:, None] & (curr_offs_k[None, :] < K)
-                tl.atomic_add(grad_input_ptrs, contribution.to(compute_type), mask=grad_input_mask)
+        # Load weight block: (BLOCK_N, BLOCK_K)  — weight shape: (E, N, K)
+        weight_ptrs = (
+            weight_ptr
+            + off_experts * stride_we
+            + curr_offs_n[:, None] * stride_wn
+            + offs_k[None, :] * stride_wk
+        )
+        w = tl.load(
+            weight_ptrs,
+            mask=n_mask[:, None] & k_mask[None, :],
+            other=0.0,
+        )
+
+        # Accumulate: grad_out @ w → (BLOCK_M, BLOCK_N) @ (BLOCK_N, BLOCK_K) = (BLOCK_M, BLOCK_K)
+        accumulator = tl.dot(grad_out, w, acc=accumulator)
+
+    # One atomic_add per (token, k_block) — only top_k different M-blocks contend here
+    grad_input_ptrs = grad_input_ptr + (
+        (offs_token[:, None] // top_k) * stride_gim + offs_k[None, :] * stride_gik
+    )
+    grad_input_mask = token_mask[:, None] & k_mask[None, :]
+    tl.atomic_add(grad_input_ptrs, accumulator.to(compute_type), mask=grad_input_mask)
 
 
 @triton.jit
@@ -228,9 +230,9 @@ def fused_moe_backward_weight_kernel(
         num_input_tokens = num_valid_tokens // top_k
         input_mask = token_mask & (input_token_idx < num_input_tokens)
 
-    # Load topk_weights if needed
+    # Load topk_weights if needed (cast to fp32 to avoid dtype promotion in multiplication)
     if MUL_ROUTED_WEIGHT:
-        moe_weight = tl.load(topk_weights_ptr + offs_token_clamped, mask=token_mask, other=0.0)
+        moe_weight = tl.load(topk_weights_ptr + offs_token_clamped, mask=token_mask, other=0.0).to(tl.float32)
 
     # Current N offset for this program
     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N).to(tl.int64)
@@ -245,9 +247,9 @@ def fused_moe_backward_weight_kernel(
         other=0.0,
     )
 
-    # Apply topk_weights if needed
+    # Apply topk_weights: compute in fp32 then cast back to compute_type to avoid dtype promotion
     if MUL_ROUTED_WEIGHT:
-        grad_out = grad_out * moe_weight[:, None]
+        grad_out = (grad_out.to(tl.float32) * moe_weight[:, None]).to(compute_type)
 
     # Zero out padding tokens
     token_mask_col = token_mask[:, None]
@@ -456,8 +458,12 @@ def invoke_fused_moe_backward_kernel(
     E, N, K = weight.shape
 
     # ===================== Compute grad_input =====================
+    # New: 2D grid (M_blocks, K_blocks) — loops over N, atomic only for top_k contention
     def grid_input(META):
-        return (triton.cdiv(sorted_token_ids.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),)
+        return (
+            triton.cdiv(sorted_token_ids.shape[0], META["BLOCK_SIZE_M"]),
+            triton.cdiv(K, META["BLOCK_SIZE_K"]),
+        )
 
     fused_moe_backward_input_kernel[grid_input](
         grad_output,
