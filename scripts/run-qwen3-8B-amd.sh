@@ -132,6 +132,7 @@ SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
    --sglang-disable-custom-all-reduce
+   --sglang-cuda-graph-max-bs 256
 )
 ####################
 
@@ -171,6 +172,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --num-gpus-per-node ${NUM_GPUS} \
    --colocate \
    --no-offload-train \
+   --gradient-checkpointing \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
