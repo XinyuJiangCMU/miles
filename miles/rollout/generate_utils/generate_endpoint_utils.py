@@ -100,9 +100,13 @@ async def update_sample_from_response(
     sample.rollout_routed_experts = _get_rollout_topk_from_response(
         output, sample, "routed_experts", args.num_layers, args.moe_router_topk
     )
-    sample.rollout_indexer_topk = _get_rollout_topk_from_response(
-        output, sample, "indexer_topk", args.num_indexer_layers, args.index_topk
-    )
+    if "indexer_topk" in output["meta_info"]:
+        indexer_layers, indexer_topk = _get_indexer_replay_shape(args)
+        sample.rollout_indexer_topk = _get_rollout_topk_from_response(
+            output, sample, "indexer_topk", indexer_layers, indexer_topk
+        )
+    else:
+        sample.rollout_indexer_topk = None
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
@@ -114,3 +118,24 @@ def _get_rollout_topk_from_response(output, sample, key, num_layers, topk):
         return None
     x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
     return x.reshape(len(sample.tokens) - 1, num_layers, topk)
+
+
+def _get_indexer_replay_shape(args) -> tuple[int, int]:
+    num_layers = getattr(args, "num_indexer_layers", None)
+    topk = getattr(args, "index_topk", None)
+
+    if num_layers is None:
+        compress_ratios = getattr(args, "dsv4_compress_ratios", None)
+        if compress_ratios is not None:
+            num_layers = sum(1 for ratio in compress_ratios if ratio == 4)
+
+    if topk is None:
+        topk = getattr(args, "dsa_indexer_topk", None)
+
+    if num_layers is None or topk is None:
+        raise AttributeError(
+            "Cannot decode rollout indexer replay without indexer layer/topk args. "
+            "Expected either num_indexer_layers/index_topk or dsv4_compress_ratios/dsa_indexer_topk."
+        )
+
+    return num_layers, topk
