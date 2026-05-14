@@ -4,15 +4,17 @@ from .glm4moe import GLM4MoEBridge
 from .glm4moe_lite import GLM4MoELiteBridge
 from .mimo import MimoBridge
 from .qwen3_next import Qwen3NextBridge
+from .deepseekv4 import DeepseekV4Bridge
 
-try:
-    from .deepseekv4 import DeepseekV4Bridge
-except ImportError:
-    DeepseekV4Bridge = None
-
-__all__ = ["GLM4Bridge", "GLM4MoEBridge", "GLM4MoELiteBridge", "Qwen3NextBridge", "MimoBridge", "DeepseekV32Bridge"]
-if DeepseekV4Bridge is not None:
-    __all__.append("DeepseekV4Bridge")
+__all__ = [
+    "GLM4Bridge",
+    "GLM4MoEBridge",
+    "GLM4MoELiteBridge",
+    "Qwen3NextBridge",
+    "MimoBridge",
+    "DeepseekV32Bridge",
+    "DeepseekV4Bridge",
+]
 
 from mbridge import AutoBridge
 
