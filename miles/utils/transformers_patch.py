@@ -1,6 +1,6 @@
 import logging
 from contextlib import contextmanager
-from sglang.srt.utils.hf_transformers_utils import _load_deepseek_temp_model
+from sglang.srt.utils.hf_transformers.common import _load_deepseek_temp_model
 
 
 logger = logging.getLogger(__name__)

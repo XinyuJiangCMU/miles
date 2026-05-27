@@ -96,7 +96,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_r3: bool = True
     enable_rir: bool = False
     train_deterministic: bool = True
-    fp8_training: bool = True
+    fp8_training: bool = False  # XINYU: TE-ROCm has no FP8 block-scaled gemm yet; train in bf16 for smoke
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -156,8 +156,13 @@ def _patch_4layer_model_type(args: ScriptArgs):
         return
     text = cfg.read_text()
     if '"model_type": "deepseek_v4"' in text:
-        cfg.write_text(text.replace('"model_type": "deepseek_v4"', '"model_type": "deepseek_ref"'))
-        print(f"[patch] {cfg}: model_type deepseek_v4 -> deepseek_ref")
+        text = text.replace('"model_type": "deepseek_v4"', '"model_type": "deepseek_v3"')
+        print(f"[patch] {cfg}: model_type deepseek_v4 -> deepseek_v3")
+        cfg.write_text(text)
+    elif '"model_type": "deepseek_ref"' in text:
+        text = text.replace('"model_type": "deepseek_ref"', '"model_type": "deepseek_v3"')
+        print(f"[patch] {cfg}: model_type deepseek_ref -> deepseek_v3")
+        cfg.write_text(text)
 
 
 def _prepare_download(args: ScriptArgs):
@@ -168,7 +173,7 @@ def _prepare_download(args: ScriptArgs):
     if args.hf_checkpoint is None:
         dest = f"{args.model_dir}/{args.model_name}"
         U.exec_command(
-            f"huggingface-cli download {args.model_org}/{args.model_name} "
+            f"hf download {args.model_org}/{args.model_name} "
             f"--local-dir {dest}"
         )
     _patch_4layer_model_type(args)
@@ -351,7 +356,7 @@ def _train(args: ScriptArgs):
 
     rollout_args = (
         "--label-key label "
-        "--apply-chat-template "
+        "--apply-chat-template " "--chat-template-path /tmp/dsv4_chat_template.jinja "
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3000 "
@@ -474,6 +479,13 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
+        # ROCm: Ray actor needs to see all 8 GPUs so sglang internal TP=8 works
+        "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
+        "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES": "1",
+        "HIP_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7",
+        # ROCm: route MQA logits through aiter instead of NV-only deep_gemm
+        "SGLANG_FP8_PAGED_MQA_LOGITS_TORCH": "1",
+        "SGLANG_OPT_USE_FUSED_PAGED_COMPRESS": "1",
     }
     if args.model_name == "DeepSeek-V4-Flash-FP8-4layer":
         extra_env_vars["SGLANG_APPLY_CONFIG_BACKUP"] = "none"
