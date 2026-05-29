@@ -63,7 +63,8 @@ def dequant_block_fp8(weight: torch.Tensor, scale: torch.Tensor, block: int = 12
     scale:  e8m0       [out/block, in/block]
     """
     assert weight.dtype == torch.float8_e4m3fn
-    assert scale.dtype == torch.float8_e8m0fnu
+    # PATCH(amd-mn): accept FP32 or E8M0 scale (real checkpoint uses FP32)
+    assert scale.dtype in (torch.float8_e8m0fnu, torch.float32, torch.float64), f"unexpected scale dtype {scale.dtype}"
     out_dim, in_dim = weight.shape
     assert out_dim % block == 0 and in_dim % block == 0
     assert scale.shape == (out_dim // block, in_dim // block)
@@ -96,6 +97,11 @@ def main(flash_path: str, bf16_path: str) -> None:
         scales_by_shard.setdefault(raw_weight_map[sk], {})[sk] = None
     for shard_name, sk_map in tqdm(scales_by_shard.items(), desc="load scales"):
         shard_dict = load_file(os.path.join(flash_path, shard_name), device=device)
+        # PATCH(amd-mn): skip phantom scale entries (index lists them but the
+        # underlying weight is BF16 unquantized, no scale actually exists).
+        missing = [k for k in sk_map if k not in shard_dict]
+        for k in missing:
+            sk_map.pop(k, None)
         for k in sk_map:
             sk_map[k] = shard_dict[k]
         del shard_dict

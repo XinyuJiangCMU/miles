@@ -172,10 +172,15 @@ def _prepare_download(args: ScriptArgs):
     # (prepare_single / train with --hf-checkpoint bypass this.)
     if args.hf_checkpoint is None:
         dest = f"{args.model_dir}/{args.model_name}"
-        U.exec_command(
-            f"hf download {args.model_org}/{args.model_name} "
-            f"--local-dir {dest}"
-        )
+        from pathlib import Path
+        sentinel = Path(dest) / "config.json"
+        if sentinel.exists():
+            print(f"[prepare_download] skipping hf download: {sentinel} already exists.")
+        else:
+            U.exec_command(
+                f"hf download {args.model_org}/{args.model_name} "
+                f"--local-dir {dest}"
+            )
     _patch_4layer_model_type(args)
     _download_dataset(args)
 
@@ -220,6 +225,16 @@ def _prepare_spmd(args: ScriptArgs):
             "--expert-model-parallel-size 4 "
             "--decoder-first-pipeline-num-layers 7 "
             "--decoder-last-pipeline-num-layers 6 "
+        )
+    elif args.num_nodes == 4 and args.model_name == "DeepSeek-V4-Flash-FP8":
+        # PATCH(amd-mn): 4 nodes x 8 GPUs/node = 32 GPUs.
+        # PP=4 EP=4 TP=1. 43 layers split: 11+11+11+10.
+        extra_args += (
+            "--tensor-model-parallel-size 1 "
+            "--pipeline-model-parallel-size 4 "
+            "--expert-model-parallel-size 4 "
+            "--decoder-first-pipeline-num-layers 11 "
+            "--decoder-last-pipeline-num-layers 10 "
         )
     elif args.num_nodes == 32 and args.num_gpus_per_node == 8 and args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_args += (
@@ -314,6 +329,15 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     # H200: 8 GPUs/node
     if args.num_gpus_per_node == 8:
+        if total_gpus == 32:  # 4 nodes x 8 GPUs  (AMD MI350X/MI355X smoke)
+            return (
+                "--tensor-model-parallel-size 8 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 1 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
         if total_gpus == 64:  # 8 nodes x 8 GPUs
             return (
                 "--tensor-model-parallel-size 4 "
@@ -405,9 +429,12 @@ def _train(args: ScriptArgs):
     perf_args = _get_parallel_config(args)
 
     perf_args += (
-        "--recompute-granularity full "
-        "--recompute-method uniform "
-        "--recompute-num-layers 1 "
+        # XINYU: gradient checkpointing breaks backward through the aiter
+        # mhc_post shim (output torch.empty has requires_grad=False, recompute
+        # output filtered out → zip empty). 4-layer smoke fits without it.
+        # "--recompute-granularity full "
+        # "--recompute-method uniform "
+        # "--recompute-num-layers 1 "
         "--micro-batch-size 1 "
         "--max-tokens-per-gpu 2048 "
     )

@@ -7,19 +7,27 @@ from glob import glob
 import torch
 from safetensors.torch import load_file, save_file
 from sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
-from tile_kernels.quant import cast_back
 from tqdm import tqdm
 
 
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> torch.Tensor:
-    """Dequantize a 2D FP8 weight matrix back to bf16 using a 128x128 block scale.
+    """Torch-only block-wise FP8 -> BF16 dequant.
 
-    Backed by ``tile_kernels.quant.cast_back`` so it shares the same dequant
-    implementation as the rest of the DeepSeek stack.
+    PATCH(amd-mn): tilelang's tile_kernels.quant.cast_back fails to JIT compile on
+    ROCm 7.2 (hip_fp8.h:85 calls __host__ operator float from __device__). This pure
+    torch implementation matches semantics: each [block_size, block_size] tile of x
+    is scaled by the corresponding entry in s.
     """
     assert x.is_contiguous() and s.is_contiguous()
     assert x.dim() == 2 and s.dim() == 2
-    return cast_back((x, s), fmt='bf16', x_block_size=(block_size, block_size))
+    M, K = x.shape
+    # Convert FP8 -> FP32 element-wise (torch handles fp8_e4m3 -> fp32 natively)
+    x_fp32 = x.to(torch.float32)
+    # Expand scale per-block (block_size x block_size tiles share one scale)
+    s_expanded = s.repeat_interleave(block_size, dim=0).repeat_interleave(block_size, dim=1)
+    # Trim to actual shape (in case x dims arent multiples of block_size)
+    s_expanded = s_expanded[:M, :K]
+    return (x_fp32 * s_expanded).to(torch.bfloat16)
 
 
 def main(fp8_path, bf16_path):
