@@ -211,7 +211,7 @@ def prepare_single(args: ScriptArgs):
 
 def _prepare_spmd(args: ScriptArgs):
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
-    extra_args = "--expert-tensor-parallel-size 1 --context-parallel-size 1 "
+    extra_args = "--expert-tensor-parallel-size 1 --context-parallel-size 1 --distributed-timeout-minutes 60 "
     if args.num_nodes == 1 and is_4layer:
         extra_args += (
             "--tensor-model-parallel-size 1 "
@@ -228,13 +228,13 @@ def _prepare_spmd(args: ScriptArgs):
         )
     elif args.num_nodes == 4 and args.model_name == "DeepSeek-V4-Flash-FP8":
         # PATCH(amd-mn): 4 nodes x 8 GPUs/node = 32 GPUs.
-        # PP=4 EP=4 TP=1. 43 layers split: 11+11+11+10.
+        # Use single-node 8-GPU conversion (PP=1 TP=1 EP=8) to bypass cross-node
+        # Gloo new_group hang in initialize_model_parallel. The torch_dist format
+        # is rebalanceable at training-time load.
         extra_args += (
             "--tensor-model-parallel-size 1 "
-            "--pipeline-model-parallel-size 4 "
-            "--expert-model-parallel-size 4 "
-            "--decoder-first-pipeline-num-layers 11 "
-            "--decoder-last-pipeline-num-layers 10 "
+            "--pipeline-model-parallel-size 1 "
+            "--expert-model-parallel-size 8 "
         )
     elif args.num_nodes == 32 and args.num_gpus_per_node == 8 and args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_args += (
@@ -256,13 +256,20 @@ def _prepare_spmd(args: ScriptArgs):
     if is_4layer:
         num_gpus_for_convert = min(num_gpus_for_convert, 4)
 
+    # PATCH(amd-mn): force single-node exec for full Flash (multi-node Gloo hang).
+    force_single_node_exec = (
+        args.num_nodes == 4 and args.model_name == "DeepSeek-V4-Flash-FP8"
+    )
+    multinode_exec = (args.num_nodes > 1) and not force_single_node_exec
+    num_nodes_exec = 1 if force_single_node_exec else args.num_nodes
+
     U.convert_checkpoint(
         model_name=args.model_name,
         hf_checkpoint=f"{args.model_dir}/{args.bf16_name}",
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=num_gpus_for_convert,
-        multinode=True if args.num_nodes > 1 else False,
-        num_nodes=args.num_nodes,
+        multinode=multinode_exec,
+        num_nodes=num_nodes_exec,
         extra_args=extra_args,
         dir_dst=f"{args.model_dir}",
         megatron_path=args.megatron_path,
