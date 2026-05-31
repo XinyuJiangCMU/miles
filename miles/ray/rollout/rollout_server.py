@@ -60,7 +60,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 pg=pg,
                 all_engines=[None] * num_engines if group_cfg.worker_type != "placeholder" else [],
                 num_gpus_per_engine=gpus_per_engine,
-                num_new_engines=0,
+                has_new_engines=False,
                 worker_type=group_cfg.worker_type,
                 rank_offset=engine_offset,
                 gpu_offset=gpu_offset,
@@ -71,7 +71,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 router_port=router_port,
                 update_weights=model_cfg.update_weights,
             )
-            handles = group.start_engines(port_cursors)
+            handles, _ = group.start_engines(port_cursors)
             all_init_handles.extend(handles)
             server_groups.append(group)
 
@@ -163,12 +163,12 @@ class RolloutServer:
         return [e for g in self.server_groups for e in g.all_engines]
 
     @property
-    def num_new_engines(self):
-        return sum(g.num_new_engines for g in self.server_groups)
+    def has_new_engines(self) -> bool:
+        return any(g.has_new_engines for g in self.server_groups)
 
-    def clear_num_new_engines(self):
+    def clear_has_new_engines(self):
         for g in self.server_groups:
-            g.num_new_engines = 0
+            g.has_new_engines = False
 
     @property
     def engine_gpu_counts(self) -> list[int]:

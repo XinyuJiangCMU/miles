@@ -192,17 +192,17 @@ class RolloutManager:
         engines = srv.engines if srv else []
         gpu_counts = srv.engine_gpu_counts if srv else []
         gpu_offsets = srv.engine_gpu_offsets if srv else []
-        num_new = srv.num_new_engines if srv else 0
-        return engines, self.rollout_engine_lock, num_new, gpu_counts, gpu_offsets
+        has_new = srv.has_new_engines if srv else False
+        return engines, self.rollout_engine_lock, has_new, gpu_counts, gpu_offsets
 
-    def clear_updatable_num_new_engines(self):
-        # when fault tolerance is not enabled, we need to manually clear num_new_engines after update_weights
+    def clear_updatable_has_new_engines(self):
+        # when fault tolerance is not enabled, we need to manually clear has_new_engines after update_weights
         srv = self._get_updatable_server()
         if srv:
-            srv.clear_num_new_engines()
+            srv.clear_has_new_engines()
 
     async def recover_updatable_engines(self) -> None:
-        """Restart any dead rollout engines and update num_new_engines for update_weights detection.
+        """Restart any dead rollout engines and update has_new_engines for update_weights detection.
 
         Recovers the updatable model (the one that receives weight
         updates from training).

@@ -33,7 +33,8 @@ class ServerGroup:
     pg: Any  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
     all_engines: list
     num_gpus_per_engine: int
-    num_new_engines: int
+    # NOTE: this may have risk when recovering engines parallelly; may use source of truth (all_engines) later
+    has_new_engines: bool
     worker_type: str = "regular"  # "regular", "prefill", or "decode"
     rank_offset: int = 0
     gpu_offset: int = 0
@@ -53,15 +54,15 @@ class ServerGroup:
         """Node-0 engines only (for multi-node serving)."""
         return self.all_engines[:: self.nodes_per_engine]
 
-    def start_engines(self, port_cursors: PortCursors) -> list:
+    def start_engines(self, port_cursors: PortCursors) -> tuple[list, int]:
         """Create Ray actors, allocate ports, and fire ``engine.init()`` without waiting.
 
-        Returns ``(init_handles, port_cursors)`` where *init_handles* is a list
+        Returns ``(init_handles, curr_num_new_engines)`` where *init_handles* is a list
         of Ray ObjectRefs and *port_cursors* maps node index -> next free port.
         """
         if self.args.debug_train_only or self.worker_type == "placeholder":
-            self.num_new_engines = 0
-            return []
+            self.has_new_engines = False
+            return [], 0
 
         num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
 
@@ -123,10 +124,11 @@ class ServerGroup:
             new_engines.append((global_rank, rollout_engine))
             self.all_engines[i] = rollout_engine
 
-        self.num_new_engines = len(new_engines)
+        curr_num_new_engines = len(new_engines)
+        self.has_new_engines |= curr_num_new_engines > 0
 
-        if self.num_new_engines == 0:
-            return []
+        if curr_num_new_engines == 0:
+            return [], 0
 
         if self.args.rollout_external:
             addr_and_ports = allocate_rollout_engine_addr_and_ports_external(
@@ -152,7 +154,7 @@ class ServerGroup:
             )
             for index, engine in new_engines
         ]
-        return init_handles
+        return init_handles, curr_num_new_engines
 
     def stop_engines(self, rollout_engine_id: int):
         logger.info(f"Killing server group {rollout_engine_id}...")
@@ -176,12 +178,13 @@ class ServerGroup:
     async def recover(self, port_cursors: PortCursors):
         dead_indices = [i for i, engine in enumerate(self.all_engines) if engine is None]
 
-        await asyncio.gather(*self.start_engines(port_cursors))
+        handles, curr_num_new_engines = self.start_engines(port_cursors)
+        await asyncio.gather(*handles)
 
         release_handles = []
         all_resume_engines = []
-        logger.info(f"Recovered {self.num_new_engines} dead rollout engines (worker_type={self.worker_type})")
-        assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
+        logger.info(f"Recovered {curr_num_new_engines} dead rollout engines (worker_type={self.worker_type})")
+        assert curr_num_new_engines == len(dead_indices), "curr_num_new_engines does not match dead_indices length"
         if self.needs_offload and dead_indices:
             new_engines = [self.all_engines[i] for i in dead_indices]
             release_handles.extend(engine.release_memory_occupation.remote() for engine in new_engines)
