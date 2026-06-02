@@ -1,0 +1,232 @@
+# =============================================================================
+# Miles AMD daily image — single file, multi-arch (gfx950 MI350/355 + gfx942 MI300)
+#
+# Layered on top of an SGLang ROCm nightly base. Both arches use the same build
+# pipeline; the GPU arch is selected at build time, mirroring how sgl-project's
+# docker/rocm.Dockerfile selects a base stage by ${GPU_ARCH}.
+#
+# How the multi-arch selection works (the sglang trick):
+#   - One named build stage per arch:  FROM <base> AS gfx950 / AS gfx942
+#   - `FROM ${GPU_ARCH}` then continues from whichever stage the build-arg names.
+#   So `--build-arg GPU_ARCH=gfx950` builds on the mi35x base, `=gfx942` on mi30x.
+#
+# Build MI350 / MI355 (gfx950) — default, validated on MI355X:
+#   docker build . -f docker/Dockerfile.rocm \
+#     --build-arg GPU_ARCH=gfx950 \
+#     -t radixark/miles:rocm-mi35x-$(date +%Y%m%d)
+#
+# Build MI300 (gfx942) — needs validation on an MI300 node:
+#   docker build . -f docker/Dockerfile.rocm \
+#     --build-arg GPU_ARCH=gfx942 \
+#     --build-arg AITER_COMMIT=v0.1.10.post3 \
+#     --build-arg TRANSFORMER_ENGINE_BRANCH=dev \
+#     --build-arg TRANSFORMER_ENGINE_COMMIT=90c04bcdc3c109505b318f40a39680263af55edf \
+#     -t radixark/miles:rocm-mi30x-$(date +%Y%m%d)
+#
+# Daily builds: point the per-arch base at the freshest SGLang ROCm nightly
+# (rocm/sgl-dev:vX-rocm720-mi35x-YYYYMMDD / -mi30x-YYYYMMDD), or a locally
+# cached base to avoid re-pulling a ~75GB image.
+# =============================================================================
+
+# ---- Per-arch base images (sglang ROCm nightlies). Override for daily builds. ----
+# GPU_ARCH selects the base stage below, so it must be declared before the first
+# FROM (global ARGs used in a FROM are consumed at that FROM).
+ARG GPU_ARCH=gfx950
+ARG BASE_IMAGE_gfx950=lmsysorg/sglang:v0.5.10-rocm720-mi35x
+ARG BASE_IMAGE_gfx942=lmsysorg/sglang:v0.5.10-rocm720-mi30x
+
+FROM ${BASE_IMAGE_gfx950} AS gfx950
+FROM ${BASE_IMAGE_gfx942} AS gfx942
+
+# Select the base stage by arch (the sglang `FROM ${GPU_ARCH}` mechanism).
+FROM ${GPU_ARCH} AS build
+
+SHELL ["/bin/bash", "-ceuxo", "pipefail"]
+
+# ======================================== Arguments =============================================
+
+# Re-declare GPU_ARCH after FROM so it is in scope for the build stage.
+ARG GPU_ARCH=gfx950
+ARG MAX_JOBS=128
+
+# Component sources. Branches (not pinned commits) make the daily rebuild pick
+# up the latest upstream automatically; set the *_COMMIT args for reproducible
+# builds.
+ARG SGLANG_BRANCH=sglang-miles
+ARG SGLANG_COMMIT=""
+
+ARG MEGATRON_REPO=radixark/Megatron-LM
+ARG MEGATRON_BRANCH=miles-main
+
+ARG MILES_REPO=radixark/miles
+ARG MILES_COMMIT=main
+
+ARG AITER_REPO=https://github.com/ROCm/aiter.git
+ARG AITER_COMMIT=v0.1.11.post1
+
+ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
+ARG RCCL_TESTS_BRANCH=develop
+ARG RCCL_TESTS_PATH=projects/rccl-tests
+
+# Transformer Engine: gfx950 builds the v2.8_rocm branch; gfx942 can pin a
+# commit by passing TRANSFORMER_ENGINE_BRANCH=dev + TRANSFORMER_ENGINE_COMMIT=...
+ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
+ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
+ARG TRANSFORMER_ENGINE_COMMIT=""
+
+# Pinned flydsl wheel that matches the AITER_COMMIT toolchain. Bump together.
+ARG FLYDSL_VERSION=0.0.1.dev95158637
+
+# amd_patch set to apply (latest = sglang-miles; sglv0.5.7 = the older MI300 set).
+ARG PATCH_DIR=latest
+
+# ======================================== Setup =============================================
+
+WORKDIR /root/
+
+ENV MAX_JOBS=${MAX_JOBS}
+
+# Build configuration for the selected arch.
+ENV GPU_ARCH=${GPU_ARCH} \
+    PYTORCH_ROCM_ARCH=${GPU_ARCH} \
+    GPU_ARCH_LIST=${GPU_ARCH} \
+    AMDGPU_TARGET=${GPU_ARCH}
+
+# Transformer Engine build knobs.
+ENV NVTE_FRAMEWORK=pytorch \
+    NVTE_ROCM_ARCH=${GPU_ARCH} \
+    NVTE_USE_HIPBLASLT=1 \
+    NVTE_USE_ROCM=1 \
+    NVTE_FUSED_ATTN=0 \
+    CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
+
+# Copy the whole amd_patch tree; ${PATCH_DIR} selects which set is applied below.
+COPY docker/amd_patch /tmp/amd_patch_all
+COPY requirements.txt /tmp/requirements.txt
+
+# ======================================== Apt dependencies =============================================
+
+# Build tools + diagnostics utilities.
+RUN apt update && \
+    apt install -y build-essential cmake dnsutils ethtool git nvtop rsync
+
+# Build rccl-tests diagnostics binaries.
+RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/rocm-systems && \
+    make -C /tmp/rocm-systems/${RCCL_TESTS_PATH} -j$(nproc) \
+      HIP_HOME=/opt/rocm \
+      NCCL_HOME=/opt/rocm \
+      GPU_TARGETS=${GPU_ARCH} && \
+    cp /tmp/rocm-systems/${RCCL_TESTS_PATH}/build/*_perf /usr/local/bin/ && \
+    rm -rf /tmp/rocm-systems
+
+# ====================================== Python dependencies ============================================
+
+# Rebuild AITER at the version paired with SGLang.
+RUN pip uninstall -y aiter || true
+RUN pip install flydsl==${FLYDSL_VERSION} psutil pybind11
+RUN cd /sgl-workspace/aiter && \
+    git remote set-url origin ${AITER_REPO} && \
+    git checkout ${AITER_COMMIT} && \
+    git reset --hard ${AITER_COMMIT} && \
+    git clean -fdx && \
+    git submodule sync --recursive && \
+    git submodule update --init --recursive && \
+    # Toolchain fixes for the ROCm 7.2 image. These two seds are pinned to the
+    # source layout of AITER_COMMIT=v0.1.11.post1 (gfx950 default); they are
+    # line-number sensitive, so revisit them whenever AITER_COMMIT is bumped.
+    # On gfx942/older aiter these paths differ — guard so the build doesn't fail.
+    if [ "${AITER_COMMIT}" = "v0.1.11.post1" ]; then \
+      sed -i '459 s/if.*:/if False:/' aiter/ops/triton/attention/pa_mqa_logits.py && \
+      sed -i '/c1 = torch.empty((M, D, S1 + S3), dtype=dtype, device=x.device)/i\    config = dict(config)' \
+        aiter/ops/triton/gemm/fused/fused_gemm_afp4wfp4_split_cat.py ; \
+    fi && \
+    GPU_ARCHS=${GPU_ARCH} pip install -e .
+
+# Install Transformer Engine from the requested branch (or pinned commit).
+RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true
+RUN rm -rf /root/TransformerEngine && \
+    git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
+    cd /root/TransformerEngine && \
+    if [ -n "${TRANSFORMER_ENGINE_COMMIT}" ]; then \
+      git checkout ${TRANSFORMER_ENGINE_COMMIT} && \
+      git submodule update --init --recursive ; \
+    fi && \
+    pip install . --no-build-isolation -v
+
+RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
+
+RUN GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} \
+    pip -v install flash-attn==2.8.3 --no-build-isolation
+
+RUN pip install flash-linear-attention==0.4.2
+
+RUN rm -rf /root/Megatron-LM && \
+    git clone --recursive -b ${MEGATRON_BRANCH} https://github.com/${MEGATRON_REPO}.git /root/Megatron-LM && \
+    cd /root/Megatron-LM && \
+    git apply /tmp/amd_patch_all/${PATCH_DIR}/megatron.patch && \
+    pip install -e .
+
+# Rebuild sgl_kernel + sglang from the sglang-miles branch (or pinned commit).
+RUN pip uninstall -y sgl_kernel sglang || true
+RUN cd /sgl-workspace/sglang && \
+    git reset --hard && \
+    git clean -fdx && \
+    git fetch origin ${SGLANG_BRANCH} && \
+    if [ -n "${SGLANG_COMMIT}" ]; then \
+      git checkout ${SGLANG_COMMIT}; \
+    else \
+      git checkout FETCH_HEAD; \
+    fi && \
+    git submodule sync --recursive && \
+    git submodule update --init --recursive && \
+    cd sgl-kernel && \
+    rm -f pyproject.toml && \
+    mv pyproject_rocm.toml pyproject.toml && \
+    AMDGPU_TARGET=${GPU_ARCH} python setup_rocm.py install && \
+    cd .. && \
+    rm -rf python/pyproject.toml && \
+    mv python/pyproject_other.toml python/pyproject.toml && \
+    pip install -e "python[all_hip]" --no-deps
+
+RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
+
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
+RUN pip install git+https://github.com/yushengsu-thu/Megatron-Bridge.git@merged-megatron-0.16.0rc0-miles --no-deps --no-build-isolation
+RUN pip install megatron-energon --no-deps
+RUN pip install multi-storage-client --no-deps
+
+RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
+    pip install -r /tmp/requirements.txt
+
+# Pin numpy 1.x for Megatron compatibility.
+RUN pip install "numpy<2"
+
+# ====================================== Install main package ============================================
+
+RUN git clone https://github.com/${MILES_REPO}.git /root/miles && \
+    cd /root/miles && \
+    git checkout ${MILES_COMMIT} && \
+    git apply --3way --unidiff-zero /tmp/amd_patch_all/${PATCH_DIR}/miles.patch && \
+    mkdir -p miles/backends/experimental/fsdp_utils/sglang_attn_bridge && \
+    cp -r /tmp/amd_patch_all/${PATCH_DIR}/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
+    pip install -e . --no-deps
+
+# ====================================== Runtime knobs ============================================
+
+ENV HIP_FORCE_DEV_KERNARG=1 \
+    HSA_NO_SCRATCH_RECLAIM=1 \
+    SGLANG_USE_AITER=1 \
+    SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 \
+    SGLANG_MOE_PADDING=1 \
+    SGLANG_SET_CPU_AFFINITY=1 \
+    SGLANG_ROCM_FUSED_DECODE_MLA=1 \
+    SGLANG_USE_ROCM700A=1 \
+    NCCL_MIN_NCHANNELS=112 \
+    TORCHINDUCTOR_MAX_AUTOTUNE=1 \
+    TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
+
+RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch_all
+
+WORKDIR /root/
+
+CMD ["/usr/bin/bash"]
