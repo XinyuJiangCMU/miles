@@ -22,7 +22,16 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import StrEnum
+
+try:
+    from enum import StrEnum  # Python 3.11+
+except ImportError:  # Python 3.10 (ROCm base images ship 3.10)
+    from enum import Enum
+
+    class StrEnum(str, Enum):  # minimal backport of 3.11 enum.StrEnum
+        __str__ = str.__str__
+
+
 from pathlib import Path
 from typing import Any
 

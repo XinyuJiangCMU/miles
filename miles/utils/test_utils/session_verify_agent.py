@@ -11,7 +11,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-from enum import Enum, StrEnum
+from enum import Enum
+
+try:
+    from enum import StrEnum  # Python 3.11+
+except ImportError:  # Python 3.10 (ROCm base images ship 3.10)
+
+    class StrEnum(str, Enum):  # minimal backport of 3.11 enum.StrEnum
+        __str__ = str.__str__
 
 import httpx
 
