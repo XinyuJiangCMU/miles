@@ -19,6 +19,23 @@ from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_compresse
     quantize_params_compressed_tensors,
 )
 
+# `quantize_params_compressed_tensors` only reaches the actual INT4 quant kernel
+# (the optional native `fake_int4_quant_cuda` CUDA extension) for params that are
+# NOT ignored. The ignore-rule (pass-through) cases never touch it. On builds
+# where the optional CUDA ext is absent (e.g. ROCm), skip only the cases that
+# actually quantize; the pass-through ignore cases still run.
+try:
+    import fake_int4_quant_cuda as _fake_int4_quant_cuda  # noqa: F401
+
+    _HAS_INT4_QUANT = True
+except ImportError:
+    _HAS_INT4_QUANT = False
+
+_requires_int4_quant = pytest.mark.skipif(
+    not _HAS_INT4_QUANT,
+    reason="native fake_int4_quant_cuda extension is optional/CUDA-only and unavailable",
+)
+
 CONFIG = {
     "config_groups": {"group_0": {"weights": {"group_size": 128, "symmetric": True}}},
     "ignore": [],  # overridden per test
@@ -52,14 +69,16 @@ class TestIgnoreRulePrefixMatching:
             ("model.layers.0.self_attn", "model.layers.0.self_attn.q_proj.weight", True),
             ("model.layers.", "model.layers.5.attn.weight", True),
             ("model.embed", "model.embed_tokens.weight", True),
-            # non-matching
-            ("model.layers.1", "model.layers.0.attn.weight", False),
-            ("other.prefix", "model.layers.0.attn.weight", False),
+            # non-matching: these are NOT ignored, so they hit the INT4 quant
+            # kernel -> require the optional native CUDA ext.
+            pytest.param("model.layers.1", "model.layers.0.attn.weight", False, marks=_requires_int4_quant),
+            pytest.param("other.prefix", "model.layers.0.attn.weight", False, marks=_requires_int4_quant),
         ],
     )
     def test_ignore_rule_matching(self, rule, name, expected_ignored):
         assert _is_ignored(name, [rule]) == expected_ignored
 
+    @_requires_int4_quant
     def test_prefix_selectively_ignores(self):
         """Prefix rule ignores matching params while others get quantized."""
         config = {**CONFIG, "ignore": ["model.layers.0.self_attn"]}

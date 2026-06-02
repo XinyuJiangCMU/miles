@@ -5,6 +5,15 @@ register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
 
 import pytest
 import torch
+
+# NVFP4 is a Blackwell-only TE recipe; the `custom_recipes` subpackage is absent
+# from non-CUDA (e.g. ROCm) TE builds. Skip the whole module cleanly there
+# instead of failing collection with a ModuleNotFoundError.
+pytest.importorskip(
+    "transformer_engine.pytorch.custom_recipes",
+    reason="NVFP4 reference (transformer_engine.pytorch.custom_recipes) is CUDA/Blackwell-only",
+)
+
 from tools.convert_hf_to_nvfp4 import quantize_nvfp4 as tool_quantize_nvfp4
 from tools.convert_hf_to_nvfp4 import should_quantize as tool_should_quantize_nvfp4
 from transformer_engine.pytorch.custom_recipes.quantization_nvfp4 import NVFP4QuantizerRef

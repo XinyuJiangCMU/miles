@@ -10,10 +10,23 @@ register_cuda_ci(
 
 import pytest
 import torch
+
+# The whole test compares against TE's `MXFP8Quantizer` reference. ROCm TE builds
+# currently do not export that symbol, so importing it fails collection. Skip the
+# module cleanly when the reference is unavailable instead of erroring. (See the
+# AMD-MXFP8 note: if the ROCm TE build is meant to ship MXFP8Quantizer, this skip
+# is masking a missing-symbol gap in the TE build, not a test bug.)
+try:
+    from transformer_engine.pytorch import MXFP8Quantizer
+    from transformer_engine.pytorch.constants import TE_DType
+except ImportError as exc:
+    pytest.skip(
+        f"transformer_engine MXFP8 reference unavailable ({exc})",
+        allow_module_level=True,
+    )
+
 from tools.convert_hf_to_mxfp8 import quantize_mxfp8 as tool_quantize_mxfp8
 from tools.convert_hf_to_mxfp8 import should_quantize as tool_should_quantize_mxfp8
-from transformer_engine.pytorch import MXFP8Quantizer
-from transformer_engine.pytorch.constants import TE_DType
 
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_mxfp8 import (
     _quantize_param as processor_quantize_mxfp8_param,
