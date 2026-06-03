@@ -47,6 +47,14 @@ VARIANTS = {
         "tag_postfix": "",
         "build_args": {},
     },
+    "rocm-mi350": {
+        "image": "rlsys/miles",
+        "tag_postfix": "-rocm720-mi35x",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx950",
+        },
+    },
 }
 
 
@@ -61,6 +69,8 @@ def build_and_push(
     variant: str, image_tag: str, dry_run: bool, dockerfile: str, push: bool = False, custom_tag: str = ""
 ) -> None:
     config = VARIANTS[variant]
+    # A variant may pin its own Dockerfile (e.g. ROCm); otherwise use the CLI default.
+    dockerfile = config.get("dockerfile", dockerfile)
     image = config["image"]
     postfix = config.get("tag_postfix", "")
 
@@ -114,6 +124,7 @@ class Variant(str, Enum):
     cu129_arm64 = "cu129-arm64"
     cu13_arm64 = "cu13-arm64"
     debug = "debug"
+    rocm_mi350 = "rocm-mi350"
 
 
 class ImageTag(str, Enum):
