@@ -49,11 +49,11 @@ VARIANTS = {
     },
     "rocm-mi350": {
         "image": "rlsys/miles",
-        "tag_postfix": "-rocm720-mi35x",
+        "tag_postfix": "-rocm700-mi35x",
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
             "GPU_ARCH": "gfx950",
-            "SGLANG_IMAGE_TAG": "v0.5.10-rocm720-mi35x",
+            "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi35x",
         },
     },
     "rocm-mi300": {

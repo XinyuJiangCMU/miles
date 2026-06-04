@@ -36,7 +36,7 @@ jobs:
       matrix:
         include:
           - variant: rocm-mi350
-            postfix: rocm720-mi35x
+            postfix: rocm700-mi35x
           - variant: rocm-mi300
             postfix: rocm700-mi30x
     steps:
