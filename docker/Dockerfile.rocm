@@ -139,6 +139,9 @@ RUN pip install multi-storage-client --no-deps
 
 # Megatron post_training and Megatron-Bridge hard-import modelopt.
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
+# modelopt pulls setuptools up to 82, which drops pkg_resources and breaks deps that
+# still import it; re-pin to the base image's setuptools.
+RUN pip install "setuptools==79.0.1"
 
 # Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
 RUN pip install "typer==0.25.1" "click==8.2.1"
