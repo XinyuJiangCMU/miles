@@ -1,22 +1,12 @@
-# Single multi-arch ROCm Dockerfile for Miles.
+# Multi-arch ROCm image for Miles (built on a prebuilt sglang base):
 #
-# Follows the same paradigm as docker/Dockerfile (NV side): a single
-# SGLANG_IMAGE_TAG + GPU_ARCH build-arg, with the per-GPU values supplied by
-# docker/build.py (variants rocm-mi35x / rocm-mi30x).
+# 1. rlsys/miles:MI350-355-latest  (gfx950, ROCm 7.2 / MI350 / MI355X)
+#    use default settings
 #
-#   # MI350 / MI355X  (gfx950, ROCm 7.2)
-#   docker build -f docker/Dockerfile.rocm --build-arg GPU_ARCH=gfx950 \
-#     --build-arg SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x -t rlsys/miles:MI350-355-latest .
-#
-#   # MI300 / MI325   (gfx942, ROCm 7.0)
-#   docker build -f docker/Dockerfile.rocm --build-arg GPU_ARCH=gfx942 \
-#     --build-arg SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x -t rlsys/miles:MI300-latest .
-#
-# Supersedes the per-GPU files Dockerfile.rocm_MI300 and Dockerfile.rocm_MI350-5.
+# 2. rlsys/miles:MI300-latest  (gfx942, ROCm 7.0 / MI300 / MI325)
+#    build-arg:GPU_ARCH=gfx942
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
 
-# The base already ships sglang, aiter, sgl-model-gateway (router), tilelang, mooncake,
-# mori and fast-hadamard-transform, so the Miles layer below only rebuilds/adds what it
-# needs on top. Default tag = mi35x (primary); build.py overrides it per arch.
 ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
@@ -65,6 +55,7 @@ ENV NVTE_FUSED_ATTN=0
 ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 
 # Patches + requirements consumed below.
+# TODO: remove these patches once the changes are merged into the main codebase.
 COPY docker/amd_patch/latest/megatron.patch /tmp/amd_patch/megatron.patch
 COPY docker/amd_patch/latest/miles.patch /tmp/amd_patch/miles.patch
 COPY docker/amd_patch/latest/sglang_attn_bridge /tmp/amd_patch/sglang_attn_bridge
@@ -169,6 +160,15 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     mkdir -p miles/backends/experimental/fsdp_utils/sglang_attn_bridge && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
+
+# 3.10 compatibility shim: miles uses the Python 3.11 StrEnum, but the ROCm sglang base is py3.10
+# (the NV/CUDA base is already py3.12). Backport StrEnum on <3.11 and make the imports
+# version-guarded. TODO: remove once the ROCm base is py3.11+.
+RUN pip install backports.strenum && \
+    for f in $(grep -rlE '^from enum import .*StrEnum' /root/miles/miles || true); do \
+      sed -i -E 's/^from enum import Enum, StrEnum$/from enum import Enum\ntry:\n    from enum import StrEnum\nexcept ImportError:\n    from backports.strenum import StrEnum/' "$f" && \
+      sed -i -E 's/^from enum import StrEnum$/try:\n    from enum import StrEnum\nexcept ImportError:\n    from backports.strenum import StrEnum/' "$f"; \
+    done
 
 # ====================================== Runtime knobs ==========================================
 

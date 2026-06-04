@@ -56,6 +56,15 @@ VARIANTS = {
             "SGLANG_IMAGE_TAG": "v0.5.10-rocm720-mi35x",
         },
     },
+    "rocm-mi300": {
+        "image": "rlsys/miles",
+        "tag_postfix": "-rocm700-mi30x",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx942",
+            "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi30x",
+        },
+    },
 }
 
 
@@ -126,6 +135,7 @@ class Variant(str, Enum):
     cu13_arm64 = "cu13-arm64"
     debug = "debug"
     rocm_mi350 = "rocm-mi350"
+    rocm_mi300 = "rocm-mi300"
 
 
 class ImageTag(str, Enum):

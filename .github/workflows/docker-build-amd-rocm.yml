@@ -1,4 +1,4 @@
-name: Docker Build & Push (AMD ROCm 7.2)
+name: Docker Build & Push (AMD ROCm)
 
 on:
   push:
@@ -30,6 +30,15 @@ on:
 jobs:
   build-and-push:
     runs-on: self-hosted
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - variant: rocm-mi350
+            postfix: rocm720-mi35x
+          - variant: rocm-mi300
+            postfix: rocm700-mi30x
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,7 +64,7 @@ jobs:
       - name: Build and push
         run: |
           python3 docker/build.py \
-            --variant rocm-mi350 \
+            --variant ${{ matrix.variant }} \
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
             --push
@@ -75,14 +84,14 @@ jobs:
           URL="https://hub.docker.com/v2/repositories/${IMAGE}/tags/?page_size=100"
           while [ "$URL" != "null" ] && [ -n "$URL" ]; do
             RESP=$(curl -s -H "Authorization: JWT ${TOKEN}" "$URL")
-            PAGE_TAGS=$(echo "$RESP" | jq -r '.results[].name' | grep -E '^dev-rocm720-mi35x-[0-9]{12}$' || true)
+            PAGE_TAGS=$(echo "$RESP" | jq -r '.results[].name' | grep -E '^dev-${{ matrix.postfix }}-[0-9]{12}$' || true)
             DEV_TAGS="${DEV_TAGS}${PAGE_TAGS}"$'\n'
             URL=$(echo "$RESP" | jq -r '.next')
           done
 
           SORTED=$(echo "$DEV_TAGS" | grep -v '^$' | sort)
           COUNT=$(echo "$SORTED" | wc -l | tr -d ' ')
-          echo "Found ${COUNT} timestamped dev tags"
+          echo "Found ${COUNT} timestamped dev tags for ${{ matrix.postfix }}"
 
           if [ "$COUNT" -le "$KEEP" ]; then
             echo "Nothing to prune (keep=${KEEP})"
