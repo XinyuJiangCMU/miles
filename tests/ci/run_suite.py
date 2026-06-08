@@ -10,6 +10,7 @@ from tests.ci.ci_utils import run_unittest_files
 HW_MAPPING = {
     "cpu": HWBackend.CPU,
     "cuda": HWBackend.CUDA,
+    "amd": HWBackend.AMD,
 }
 
 # PR-side label prefix the workflow attaches to every domain label and passes
@@ -36,11 +37,24 @@ PER_COMMIT_SUITES = {
         "stage-c-4-gpu-h200",
         "stage-c-2-gpu-h200",
     ],
+    # AMD/ROCm (gfx950 / MI350-355), mirroring the CUDA c-2 / c-4 / c-8 tiers.
+    # Runner labels + node slicing are wired in pr-test-amd-rocm.yml.
+    HWBackend.AMD: [
+        "stage-b-2-gpu-mi35x",
+        "stage-c-2-gpu-mi35x",
+        "stage-c-4-gpu-mi35x",
+        "stage-c-8-gpu-mi35x",
+        "stage-b-2-gpu-mi30x",
+        "stage-c-2-gpu-mi30x",
+        "stage-c-4-gpu-mi30x",
+        "stage-c-8-gpu-mi30x",
+    ],
 }
 
 # Nightly test suites (placeholder for future use)
 NIGHTLY_SUITES = {
     HWBackend.CUDA: [],
+    HWBackend.AMD: [],
 }
 
 
@@ -205,7 +219,7 @@ def run_a_suite(args):
     if args.list_only:
         return 0
 
-    # CPU tests (fast/) use pytest; CUDA tests use python3 per-file
+    # CPU tests (fast/) use pytest; CUDA/AMD tests use python3 per-file
     if hw == HWBackend.CPU:
         cmd = ["pytest"] + [t.filename for t in ci_tests] + ["-x", "-v"]
         print(f"Running: {' '.join(cmd)}", flush=True)
