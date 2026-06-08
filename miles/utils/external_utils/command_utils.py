@@ -113,6 +113,30 @@ def execute_train(
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
+    # AMD/ROCm: Ray clears HIP/CUDA/ROCR device visibility for its workers by
+    # default, so on a ROCm build the workers come up seeing no GPUs
+    # ("RuntimeError: No HIP GPUs are available"). Tell Ray not to touch device
+    # visibility. Applied only on ROCm (torch.version.hip set), so CUDA worker
+    # GPU-binding is unchanged. Set in this process (the local `ray start`
+    # inherits it) and re-injected into the ray job runtime_env below.
+    _rocm_noset_env: dict[str, str] = {}
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) is not None:
+            _rocm_noset_env = {
+                v: "1"
+                for v in (
+                    "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES",
+                    "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES",
+                    "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES",
+                )
+            }
+            for _k, _v in _rocm_noset_env.items():
+                os.environ.setdefault(_k, _v)
+    except Exception:
+        pass
+
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
 
@@ -170,6 +194,8 @@ def execute_train(
                     if config.cuda_core_dump
                     else {}
                 ),
+                # AMD/ROCm: keep Ray from blanking device visibility in workers.
+                **_rocm_noset_env,
                 **extra_env_vars,
                 **_parse_extra_env_vars(config.extra_env_vars),
             }
