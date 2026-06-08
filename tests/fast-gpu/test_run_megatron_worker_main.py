@@ -8,13 +8,17 @@ sys.modules stubbing below cannot leak across files.
 
 from __future__ import annotations
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 
 register_cuda_ci(
     est_time=30,
     suite="stage-b-2-gpu-h200",
     labels=[],
 )
+# worker/main.py helper logic + megatron/sglang import resolution; verified to
+# pass on AMD MI355X (gfx950) as-is (7 passed).
+register_amd_ci(est_time=30, suite="stage-b-2-gpu-mi35x", labels=[])
+register_amd_ci(est_time=30, suite="stage-b-2-gpu-mi30x", labels=[])
 
 import argparse
 import os
