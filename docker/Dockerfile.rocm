@@ -1,9 +1,9 @@
 # Multi-arch ROCm image for Miles (built on a prebuilt sglang base):
 #
-# 1. rlsys/miles:MI350-355-latest  (gfx950, ROCm 7.2 / MI350 / MI355X)
+# 1. rocm/sgl-dev:MI350-355-latest  (gfx950, ROCm 7.2 / MI350 / MI355X)
 #    use default settings
 #
-# 2. rlsys/miles:MI300-latest  (gfx942, ROCm 7.0 / MI300 / MI325)
+# 2. rocm/sgl-dev:MI300-latest  (gfx942, ROCm 7.0 / MI300 / MI325)
 #    build-arg:GPU_ARCH=gfx942
 #    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
 

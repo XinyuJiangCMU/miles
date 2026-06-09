@@ -48,7 +48,7 @@ VARIANTS = {
         "build_args": {},
     },
     "rocm-mi350": {
-        "image": "rlsys/miles",
+        "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm720-mi35x",
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
@@ -57,7 +57,7 @@ VARIANTS = {
         },
     },
     "rocm-mi300": {
-        "image": "rlsys/miles",
+        "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm700-mi30x",
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
