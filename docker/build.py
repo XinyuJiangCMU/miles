@@ -50,6 +50,7 @@ VARIANTS = {
     "rocm-mi350": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm720-mi35x",
+        "tag_prefix": "miles",
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
             "GPU_ARCH": "gfx950",
@@ -59,6 +60,7 @@ VARIANTS = {
     "rocm-mi300": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm700-mi30x",
+        "tag_prefix": "miles",
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
             "GPU_ARCH": "gfx942",
@@ -87,8 +89,9 @@ def build_and_push(
     if image_tag == "latest":
         tags = [f"{image}:latest{postfix}"]
     elif image_tag == "dev":
+        prefix = config.get("tag_prefix", "dev")
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
-        tags = [f"{image}:dev{postfix}", f"{image}:dev{postfix}-{timestamp}"]
+        tags = [f"{image}:{prefix}{postfix}", f"{image}:{prefix}{postfix}-{timestamp}"]
     elif image_tag == "custom":
         if not custom_tag:
             raise typer.BadParameter("--custom-tag is required when --image-tag is custom")
