@@ -62,6 +62,9 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
   by Qwen `--add-qkv-bias` + `--accumulate-allreduce-grads-in-fp32`). Surfaces only once
   placement is fixed and training actually runs. The MI355X run fixed this with a TE wgrad
   patch (skip the fusion on the ROCm fp32-accumulate path, reduce grad_bias separately).
+- **G** `ImportError: Can not import FA3 in sgl_kernel` — the ROCm `sgl_kernel` build has no
+  FA3 attention; the sglang scheduler crashes at startup unless `--attention-backend triton`
+  is pinned on ROCm (same gap as the MI355X run).
 
 ---
 
@@ -110,6 +113,19 @@ stage-b-cpu: **124 passed / 0 failed.**
 > stage through the same colocate rollout-engine startup.
 
 ---
+
+## stage-c-4-gpu  (suite: `stage-c-4-gpu-h200`)
+
+| # | Test path | Ran | Result | Notes |
+|---|---|---|---|---|
+| 1 | `tests/e2e/precision/test_hf_attention_cp_relayout.py` | yes | **PASS** | Pure-precision CP=4 attention relayout (torch.distributed, no rollout/colocate). `zigzag->packed`, `roundtrip`, `backward` all PASS on gfx942 — 4-GPU attention CP relayout works; placement fixes don't regress non-rollout e2e. |
+| 2 | `tests/e2e/sglang/test_chat_input_ids_equivalence.py` | yes | FAIL (**G**) | sglang server scheduler crashes at startup: `ImportError: Can not import FA3 in sgl_kernel` (ROCm `sgl_kernel` has no FA3). Needs `--attention-backend triton` pinned on ROCm (same fix as the MI355X run). |
+
+(Remaining stage-c-4-gpu / stage-c-8-gpu entries are large-model rollout/training e2e —
+qwen3-30B, glm5-744b, mimo-7B, sessions, ckpt, etc. — needing big models and 4–8 GPUs.
+Their per-test root causes are catalogued in FINAL_REPORT; the rollout/training ones are
+expected to behave like gsm8k / gsm8k_async above once placement is fixed: rollout starts,
+then hits the colocate weight-sync / Error **F** wgrad-GEMM gaps.)
 
 ## Notes on the broader GPU e2e set
 The 4-/8-GPU e2e failures recorded earlier (`~/mi300_ci_results/FINAL_REPORT.md`)
