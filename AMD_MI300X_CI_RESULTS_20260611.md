@@ -34,6 +34,10 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
    collapse onto the same physical GPU (`base_gpu_id` → 0 for both) → KV-cache OOM.
    Fixed by preferring the **local-id interpretation first**. Root cause of the gsm8k
    `Server process terminated unexpectedly` / rollout-engine `Not enough memory`.
+   **Same root cause** also hits `get_local_gpu_id` in `miles/ray/train_actor.py`
+   (`cvd.split(",").index(str(ray.get_gpu_ids()[0]))` → `ValueError: '0' is not in list`
+   when the train actor starts under `HIP_VISIBLE_DEVICES="1,2"`); fixed the same way
+   (local-id first). Both call sites must be patched together.
 
 ## Fix branches
 - `dev/amd-rocm-ci-0611` — merged MI300/MI350 ROCm Dockerfile + Py3.10 StrEnum/add_note fixes.
@@ -84,7 +88,7 @@ stage-b-cpu: **124 passed / 0 failed.**
 
 | # | Test path | Ran | Result | Notes |
 |---|---|---|---|---|
-| 1 | `tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py` | yes | FAIL (**C**) → **fix applied** | 2-GPU colocate GRPO. Crashed at sglang rollout init: one engine loaded the 0.5B weights using `2.02 GB`, the other reported `114 GB` and hit `RuntimeError: Not enough memory`. Root-caused: both rollout engines collapse onto the **same physical GPU** because `_to_local_gpu_id` mis-maps ray-logical ids under non-0-based `HIP_VISIBLE_DEVICES` (Fix #4). placement-debug confirmed `server_group` computes `base_gpu_id=0,1` but sglang `server_args` both show `base_gpu_id=0`. Fix applied (`_to_local_gpu_id` local-first); end-to-end re-verification in progress. |
+| 1 | `tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py` | yes | 2 GPU-placement bugs **FIXED & verified**; now reaches colocate weight-sync | 2-GPU colocate GRPO. Originally crashed at sglang rollout init (one engine `2.02 GB`, the other `114 GB` → `Not enough memory`): both rollout engines collapsed onto the **same physical GPU** (Fix #4). **After Fix #4** (both `_to_local_gpu_id` *and* `train_actor.get_local_gpu_id`): rollout engines split correctly (`base_gpu_id 0,1`, each 1GB + own 56GB KV, no OOM) **and** train-actor init passes (no more `ValueError: '0' is not in list`). Training then proceeds rollout → train-init → first `update_weights` (megatron→HF `Qwen2Bridge` conversion), where the ray job exits 1 **with no Python traceback** (last logs: Rank-0 `Converting to HuggingFace 4%`, Rank-1 `Reloading 6 process groups`, `[Gloo] Rank 0 connected to 0 peer ranks`). Deeper colocate weight-sync issue (same area as FINAL_REPORT `cannot pickle ReloadableProcessGroup` / Error **B**); needs separate investigation. |
 
 > Note (placement): the same root cause (Fix #4) is the likely explanation for the
 > FINAL_REPORT rollout-engine failures (`Request is disconnected from the client side`
