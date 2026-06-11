@@ -147,7 +147,11 @@ def _quantize_nvfp4_1d(
     else:
         global_amax = global_amax.to(device=weight.device, dtype=torch.float32)
 
-    from transformer_engine.pytorch.custom_recipes.quantization_nvfp4 import NVFP4QuantizerRef
+    from miles.backends.megatron_utils.megatron_to_hf.processors.te_nvfp4_compat import (
+        get_nvfp4_quantizer_ref,
+    )
+
+    NVFP4QuantizerRef = get_nvfp4_quantizer_ref()
 
     qweight, block_scale = NVFP4QuantizerRef._quantize_blockwise_reference(
         weight,
