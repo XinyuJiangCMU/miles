@@ -81,7 +81,7 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
 
 | Bucket | Count | Notes |
 |---|---|---|
-| passed | 2804 | up from 2615 — the 33 previously-ERROR tests now collect+pass (hypothesis Fix #3), the 7 `_raises` pass (add_note Fix #2), and `real_ray/*` (30 passed / 2 skipped) folded in from its standalone run. |
+| passed | 2804 | up from 2615 — the 33 previously-ERROR tests now collect+pass (hypothesis Fix #3) and the 7 `_raises` pass (add_note Fix #2). |
 | ERROR (**A**, fixed) | 0 (was 33) | collection `function_scoped_fixture` gone after Fix #3 (`test_train_data_conversion` etc. now pass). |
 | FAILED (**B**, fixed) | 0 (was 7) | `add_note` masking gone after Fix #2. |
 | FAILED (**E**) | 6 | `test_loss_snapshot` (grpo/sft variants): gfx942 vs CUDA `.pt` snapshot numeric diff. Platform tolerance — needs a tolerance policy or a gfx942 baseline. |
@@ -106,7 +106,7 @@ stage-b-cpu: **124 passed / 0 failed.**
 
 | # | Test path | Ran | Result | Notes |
 |---|---|---|---|---|
-| 1 | `tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py` | yes | 2 GPU-placement bugs **FIXED & verified**; now reaches colocate weight-sync | 2-GPU colocate GRPO. Originally crashed at sglang rollout init (one engine `2.02 GB`, the other `114 GB` → `Not enough memory`): both rollout engines collapsed onto the **same physical GPU** (Fix #4). **After Fix #4** (both `_to_local_gpu_id` *and* `train_actor.get_local_gpu_id`): rollout engines split correctly (`base_gpu_id 0,1`, each 1GB + own 56GB KV, no OOM) **and** train-actor init passes (no more `ValueError: '0' is not in list`). Training then proceeds rollout → train-init → first `update_weights` (megatron→HF `Qwen2Bridge` conversion), where the ray job exits 1 **with no Python traceback** (last logs: Rank-0 `Converting to HuggingFace 4%`, Rank-1 `Reloading 6 process groups`, `[Gloo] Rank 0 connected to 0 peer ranks`). Deeper colocate weight-sync issue (same area as FINAL_REPORT `cannot pickle ReloadableProcessGroup`); needs separate investigation. |
+| 1 | `tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py` | yes | placement **FIXED & verified**; blocks later at colocate weight-sync | 2-GPU colocate GRPO. Was crashing at rollout init (both engines on the same GPU → OOM); **Fix #4** splits them (`base_gpu_id 0,1`, no OOM) and train-actor init passes. Then blocks at the first `update_weights` (megatron→HF colocate weight-sync), where the ray job exits 1 — a separate weight-sync issue (FINAL_REPORT `cannot pickle ReloadableProcessGroup`), out of scope here. |
 | 2 | `tests/e2e/long/test_qwen2.5_0.5B_gsm8k_async.py` | yes | placement OK → FAIL (**F**) | async/disaggregated (actor 1 GPU + rollout 1 GPU, **no colocate**). **Placement fix verified here too**: rollout engine starts on `base_gpu_id=1`, KV allocated (no OOM, no `ValueError`). Training then hits `RuntimeError: Unable to find any suitable algorithms` (Error **F**, hipBLASLt wgrad GEMM) → train actor dies → rollout goes `no_available_workers` (503). Same Error **F** as the MI355X run; needs the TE wgrad patch to proceed. |
 
 > Note (placement): the same root cause (Fix #4) is the likely explanation for the
