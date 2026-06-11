@@ -63,10 +63,17 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
 
 | Bucket | Count | Notes |
 |---|---|---|
-| passed | 2615 | majority of CPU unit tests pass on gfx942 |
-| ERROR (**A**) | 33 | `tests/fast/ray/rollout/...` + `test_train_data_conversion` + `test_mock_sglang_engine`: collection-time `function_scoped_fixture`. **Fixed by #3** (hypothesis upgraded to 6.x; `test_train_data_conversion` 26 passed, real_ray batch 37 collected). |
-| FAILED (**B**) | 7 | `test_sample_utils` (4) + `test_openai_endpoint_utils` (3): `except ... as e: e.add_note(...)` masked the expected exception with `AttributeError`. **Fixed by #2** (those files: 7 failed → 28 passed). |
+**Full re-run with all three fixes** (StrEnum + add_note in source; hypothesis upgraded to
+6.x — note this needs an image rebuild or `pip install -U`, the existing image still ships
+5.35.1): **2774 passed / 6 failed / 41 skipped / 32 errors** in 8m23s.
+
+| Bucket | Count | Notes |
+|---|---|---|
+| passed | 2774 | up from 2615 — the 33 previously-ERROR tests now collect+pass (hypothesis Fix #3) and the 7 `_raises` pass (add_note Fix #2). |
+| ERROR (**A**, fixed) | 0 (was 33) | collection `function_scoped_fixture` gone after Fix #3 (`test_train_data_conversion` etc. now pass). |
+| FAILED (**B**, fixed) | 0 (was 7) | `add_note` masking gone after Fix #2. |
 | FAILED (**E**) | 6 | `test_loss_snapshot` (grpo/sft variants): gfx942 vs CUDA `.pt` snapshot numeric diff. Platform tolerance — needs a tolerance policy or a gfx942 baseline. |
+| ERROR (infra) | 32 | `real_ray/*` (fault_tolerance, rollout_manager, server_group): `ray_local_mode` fixture (`conftest.py:37`) `ray.init()` → `ConnectionError` (no live ray cluster). Test-infra dependency — needs a running ray cluster; surfaced only after the hypothesis fix unmasked collection. Not a ROCm core issue. |
 
 stage-b-cpu: **124 passed / 0 failed.**
 
