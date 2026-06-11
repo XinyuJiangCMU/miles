@@ -77,11 +77,11 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
 
 **Full re-run with all three fixes** (StrEnum + add_note in source; hypothesis upgraded to
 6.x — note this needs an image rebuild or `pip install -U`, the existing image still ships
-5.35.1): **2774 passed / 6 failed / 41 skipped** in 8m23s.
+5.35.1): **2804 passed / 6 failed / 43 skipped** in 8m23s.
 
 | Bucket | Count | Notes |
 |---|---|---|
-| passed | 2774 | up from 2615 — the 33 previously-ERROR tests now collect+pass (hypothesis Fix #3) and the 7 `_raises` pass (add_note Fix #2). |
+| passed | 2804 | up from 2615 — the 33 previously-ERROR tests now collect+pass (hypothesis Fix #3), the 7 `_raises` pass (add_note Fix #2), and `real_ray/*` (30 passed / 2 skipped) folded in from its standalone run. |
 | ERROR (**A**, fixed) | 0 (was 33) | collection `function_scoped_fixture` gone after Fix #3 (`test_train_data_conversion` etc. now pass). |
 | FAILED (**B**, fixed) | 0 (was 7) | `add_note` masking gone after Fix #2. |
 | FAILED (**E**) | 6 | `test_loss_snapshot` (grpo/sft variants): gfx942 vs CUDA `.pt` snapshot numeric diff. Platform tolerance — needs a tolerance policy or a gfx942 baseline. |
