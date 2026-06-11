@@ -120,6 +120,7 @@ stage-b-cpu: **124 passed / 0 failed.**
 |---|---|---|---|---|
 | 1 | `tests/e2e/precision/test_hf_attention_cp_relayout.py` | yes | **PASS** | Pure-precision CP=4 attention relayout (torch.distributed, no rollout/colocate). `zigzag->packed`, `roundtrip`, `backward` all PASS on gfx942 — 4-GPU attention CP relayout works; placement fixes don't regress non-rollout e2e. |
 | 2 | `tests/e2e/sglang/test_chat_input_ids_equivalence.py` | yes | FAIL (**G**) | sglang server scheduler crashes at startup: `ImportError: Can not import FA3 in sgl_kernel` (ROCm `sgl_kernel` has no FA3). Needs `--attention-backend triton` pinned on ROCm (same fix as the MI355X run). |
+| 3 | `tests/e2e/lora/test_lora_qwen2.5_0.5B.py` | yes | **PASS** | 4-GPU LoRA GRPO. **Placement fix verified at 4 GPUs**: the 4 sglang engines split across `base_gpu_id=0,1,2,3`. LoRA adapter sync (`load/unload_lora_adapter_from_tensors`), training and checkpointing all work; ray job **succeeded**. First stage-c rollout+train e2e to pass end-to-end on gfx942 — LoRA adapter sync avoids the full megatron→HF weight-sync path that blocks gsm8k (Error B area). |
 
 (Remaining stage-c-4-gpu / stage-c-8-gpu entries are large-model rollout/training e2e —
 qwen3-30B, glm5-744b, mimo-7B, sessions, ckpt, etc. — needing big models and 4–8 GPUs.
