@@ -40,8 +40,13 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
    (local-id first). Both call sites must be patched together.
 
 ## Fix branches
-- `dev/amd-rocm-ci-0611` — merged MI300/MI350 ROCm Dockerfile + Py3.10 StrEnum/add_note fixes.
-- `compat/py310-strenum-add-note` (PR #8) — standalone Py3.10 StrEnum + add_note compat.
+- `dev/amd-rocm-ci-0611` — integration branch: merged MI300/MI350 ROCm Dockerfile + py3.10
+  StrEnum/add_note + `hypothesis>=5.40` + `backports.strenum`.
+- `compat/py310-strenum-add-note` (PR #8) — standalone py3.10 compat: StrEnum + add_note +
+  `hypothesis>=5.40` + `backports.strenum; python_version < "3.11"`.
+- `fix/rocm-rollout-gpu-placement` (PR #9) — the rollout/train GPU-placement fix (Fix #4:
+  `_to_local_gpu_id` in `sglang_engine.py` + `get_local_gpu_id` in `train_actor.py`, local-id
+  first). Verified at 2 and 4 GPUs (gsm8k / gsm8k_async / lora).
 
 ## Error-type legend
 - **A** `AttributeError: function_scoped_fixture` — hypothesis 5.35.1 (ROCm base)
