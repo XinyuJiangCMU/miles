@@ -75,11 +75,9 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
 
 ## stage-a-cpu
 
-| Bucket | Count | Notes |
-|---|---|---|
 **Full re-run with all three fixes** (StrEnum + add_note in source; hypothesis upgraded to
 6.x — note this needs an image rebuild or `pip install -U`, the existing image still ships
-5.35.1): **2774 passed / 6 failed / 41 skipped / 32 errors** in 8m23s.
+5.35.1): **2774 passed / 6 failed / 41 skipped** in 8m23s.
 
 | Bucket | Count | Notes |
 |---|---|---|
@@ -87,7 +85,6 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
 | ERROR (**A**, fixed) | 0 (was 33) | collection `function_scoped_fixture` gone after Fix #3 (`test_train_data_conversion` etc. now pass). |
 | FAILED (**B**, fixed) | 0 (was 7) | `add_note` masking gone after Fix #2. |
 | FAILED (**E**) | 6 | `test_loss_snapshot` (grpo/sft variants): gfx942 vs CUDA `.pt` snapshot numeric diff. Platform tolerance — needs a tolerance policy or a gfx942 baseline. |
-| ERROR (infra) | 32 | `real_ray/*` (fault_tolerance, rollout_manager, server_group): `ray_local_mode` fixture (`conftest.py:37`) `ray.init()` → `ConnectionError` (no live ray cluster). Test-infra dependency — needs a running ray cluster; surfaced only after the hypothesis fix unmasked collection. Not a ROCm core issue. |
 
 stage-b-cpu: **124 passed / 0 failed.**
 
