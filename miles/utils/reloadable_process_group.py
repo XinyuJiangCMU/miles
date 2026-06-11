@@ -279,5 +279,5 @@ def _wrap_low_level_call():
         yield
     except Exception as e:
         mem_info = print_memory("after torch distributed error")
-        e.add_note(f"{mem_info=}")
+        getattr(e, "add_note", lambda *a: None)(f"{mem_info=}")  # add_note is py3.11+
         raise
