@@ -258,7 +258,7 @@ class SGLangEngine(RayActor):
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            e.add_note(f"{response.text=}")
+            getattr(e, "add_note", lambda *a: None)(f"{response.text=}")  # add_note is py3.11+
             raise
         return response.json()
 
