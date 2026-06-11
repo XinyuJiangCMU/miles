@@ -75,16 +75,29 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
 
 ## stage-a-cpu
 
-**Full re-run with all three fixes** (StrEnum + add_note in source; hypothesis upgraded to
-6.x — note this needs an image rebuild or `pip install -U`, the existing image still ships
-5.35.1): **2804 passed / 6 failed / 43 skipped** in 8m23s.
+Full CPU unit-test suite (`tests/fast`), with the three py3.10 fixes applied.
+**Result: 2692 passed / 6 failed / 41 skipped / 0 errors** (7m30s).
 
-| Bucket | Count | Notes |
+| Bucket | Count | What it is |
 |---|---|---|
-| passed | 2804 | up from 2615 — the 33 previously-ERROR tests now collect+pass (hypothesis Fix #3) and the 7 `_raises` pass (add_note Fix #2). |
-| ERROR (**A**, fixed) | 0 (was 33) | collection `function_scoped_fixture` gone after Fix #3 (`test_train_data_conversion` etc. now pass). |
-| FAILED (**B**, fixed) | 0 (was 7) | `add_note` masking gone after Fix #2. |
-| FAILED (**E**) | 6 | `test_loss_snapshot` (grpo/sft variants): gfx942 vs CUDA `.pt` snapshot numeric diff. Platform tolerance — needs a tolerance policy or a gfx942 baseline. |
+| passed | 2692 | All logic/unit tests pass on gfx942. This includes the 33 tests that used to error at collection (now fixed by Fix #3) and the 7 that used to fail (Fix #2), plus `real_ray/*` (passes once `RAY_ADDRESS` is unset so the fixture starts its own local cluster). |
+| failed | 6 | Only `test_loss_snapshot` (grpo/sft) — Error **E**. gfx942 recompute vs a CUDA-saved snapshot under a **bitwise** compare; a numeric-tolerance issue, not a code bug. |
+| skipped | 41 | None are AMD/ROCm-related — same 41 would skip on NVIDIA. Breakdown below. |
+| errors | 0 | The old failures are gone: 33 collection errors (hypothesis `function_scoped_fixture`, Fix #3) and 7 `add_note` failures (Fix #2). |
+
+The 41 skips, by reason (all platform-independent):
+
+| Count | Reason |
+|---|---|
+| 10 | DeepSeek V3.2 / V4 model files not present on this machine |
+| 18 | Test not written yet — marked `not tested yet` / `TODO: implement` |
+| 5 | Old `sglang_rollout` path does not support `rollout_max_context_len` |
+| 4 | Known `agentic_tool_call` limitations (abort / partial_rollout) |
+| 2 | `multi_turn_multi_samples` empty-list edge case |
+| 2 | `real_ray` flaky actor-termination race (pre-existing FIXME #1282) |
+
+> Note: hypothesis must be `>=5.40` for the 33 collection errors to stay fixed; the
+> existing image still ships 5.35.1, so this needs an image rebuild or `pip install -U`.
 
 stage-b-cpu: **124 passed / 0 failed.**
 
