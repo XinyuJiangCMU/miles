@@ -1,0 +1,10 @@
+--- a/python/sglang/srt/models/transformers.py
++++ b/python/sglang/srt/models/transformers.py
+@@ -241,6 +241,7 @@
+         "local": "replicate",
+         "replicated_with_grad_allreduce": "replicate",
+         "moe_tp_experts": "replicate",
++        "mla_kv_a_proj": "replicate",  # GLM-5 MLA kv_a_proj: weights replicated (transformers MlaKvAProjParallel); back-allreduce is train-only, inference forward unaffected
+     }.get(style, style)
+     if style not in {"colwise", "colwise_rep", "rowwise", "rowwise_rep", "replicate"}:
+         raise ValueError(f"Unsupported TP style '{style}' for Transformers backend.")

@@ -121,43 +121,26 @@ SGLANG_SOURCE_PATCHER_CONFIG_YAML: str = """\
 patches:
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeDecoderLayer.forward
     edits:
-      - match: |
-          hidden_states, residual = (
-              self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-                  hidden_states,
-                  residual,
-                  forward_batch,
-                  captured_last_layer_outputs=captured_last_layer_outputs,
-                  **kwargs,
-              )
-          )
-        append: "dumper.dump('layer_input', residual, dims='t h # tp:replicated dp:=attn_dp')"
-      - match: |
-          if hidden_states.shape[0] != 0:
-              hidden_states = self.self_attn(
-                  positions=positions,
-                  hidden_states=hidden_states,
-                  forward_batch=forward_batch,
-              )
-        append: "dumper.dump('attn_output', hidden_states, dims='t h # tp:replicated dp:=attn_dp')"
-      - match: |
-          hidden_states, residual = self.layer_communicator.prepare_mlp(
-              hidden_states, residual, forward_batch
-          )
-        append: |
+      # Stable single-line anchors: dump residual right before the attn gate
+      # (residual is the prepare_attn output at this point).
+      - match: "if hidden_states.shape[0] != 0:"
+        prepend: "dumper.dump('layer_input', residual, dims='t h # tp:replicated dp:=attn_dp')"
+      # hidden_states here is the post-self_attn output (dumped before prepare_mlp).
+      - match: "hidden_states, residual = self.layer_communicator.prepare_mlp("
+        prepend: "dumper.dump('attn_output', hidden_states, dims='t h # tp:replicated dp:=attn_dp')"
+      # residual / hidden_states here are the prepare_mlp outputs.
+      - match: "should_allreduce_fusion = ("
+        prepend: |
           dumper.dump('pre_mlp_residual', residual, dims='t h # tp:replicated dp:=attn_dp')
           dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h # tp:replicated')
-      - match: |
-          hidden_states = self.mlp(
-              hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
-          )
-        append: "dumper.dump('mlp_output', hidden_states, dims='t h # tp:replicated')"
+      # hidden_states here is the self.mlp output.
+      - match: "if should_allreduce_fusion:"
+        prepend: "dumper.dump('mlp_output', hidden_states, dims='t h # tp:replicated')"
 
   # --- attention internals ---
   - target: sglang.srt.models.qwen3_moe.Qwen3MoeAttention.forward_core
     edits:
-      - match: |
-          attn_output = self.attn(
+      - match: "attn_output = self.attn("
         prepend: |
           dumper.dump('attn_q', q, dims='t (num_heads*head_dim)[tp]')
           dumper.dump('attn_v', v, dims='t (num_kv_heads*head_dim)[tp]')

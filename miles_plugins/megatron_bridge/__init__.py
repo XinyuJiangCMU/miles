@@ -60,6 +60,59 @@ except Exception as _e:  # best-effort
     logger.warning("miles bridge shim _install_bridge_pp_group_unwrap not applied: %s", _e)
 
 
+def _install_remove_non_pickleables_guard() -> None:
+    """Make ``megatron.bridge``'s ``remove_non_pickleables`` robust to objects
+    that cannot be shallow-copied.
+
+    During megatron->HF weight conversion (colocate + ``--megatron-to-hf-mode
+    bridge``), ``MegatronParamMapping`` calls ``remove_non_pickleables(config)``
+    to strip non-pickleable attributes before broadcasting the HF config. The
+    helper does ``copy.copy(obj)`` on every object exposing ``__dict__``,
+    assuming it is shallow-copyable. Miles attaches a ``ReloadableProcessGroup``
+    (a ``torch.distributed.ProcessGroup`` subclass wrapping a c10d process group)
+    to the config; ``copy.copy`` on it raises
+    ``TypeError: cannot pickle 'ReloadableProcessGroup' object``, aborting
+    ``update_weights``.
+
+    Wrap the helper so process groups are dropped outright and any other
+    un-copyable object is treated as non-pickleable (returned as ``None``),
+    matching the helper's stated intent.
+    """
+    import torch
+
+    from megatron.bridge.models.conversion import param_mapping as _pm
+    from megatron.bridge.models.conversion import utils as _utils
+
+    if getattr(_utils, "_miles_remove_non_pickleables_guarded", False):
+        return
+
+    _orig = _utils.remove_non_pickleables
+
+    def remove_non_pickleables(obj, max_depth=3, current_depth=0):
+        # Process groups (incl. miles' ReloadableProcessGroup) are inherently
+        # non-pickleable -> drop them instead of trying to copy/recurse.
+        if isinstance(obj, torch.distributed.ProcessGroup):
+            return None
+        try:
+            return _orig(obj, max_depth, current_depth)
+        except (TypeError, ValueError, RuntimeError):
+            # Could not shallow-copy / clean this object -> treat as non-pickleable.
+            return None
+
+    # Patch the canonical name and param_mapping's already-imported alias. The
+    # original body recurses via the module-global name, so this wrapper is hit
+    # at every depth.
+    _utils.remove_non_pickleables = remove_non_pickleables
+    _pm.remove_non_pickleables = remove_non_pickleables
+    _utils._miles_remove_non_pickleables_guarded = True
+
+
+try:
+    _install_remove_non_pickleables_guard()
+except Exception as _e:  # best-effort
+    logger.warning("miles bridge shim _install_remove_non_pickleables_guard not applied: %s", _e)
+
+
 # Model-specific bridge subclasses. Each submodule self-installs on import.
 # Keep imports here so merely importing ``miles_plugins.megatron_bridge`` is
 # enough to pick up every miles bridge (mirrors ``miles_plugins.mbridge``).

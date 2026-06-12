@@ -1,0 +1,34 @@
+diff --git a/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py b/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py
+index 3093c196b..4192e0b0a 100644
+--- a/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py
++++ b/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py
+@@ -102,9 +102,26 @@ if _use_aiter:
+             return q_out, k_out
+ 
+     except ImportError:
+-        from aiter.ops.fused_qk_norm_rope_cache_quant import (
+-            fused_qk_rmsnorm as fused_qk_rmsnorm_bf16,
+-        )
++        try:
++            from aiter.ops.fused_qk_norm_rope_cache_quant import (
++                fused_qk_rmsnorm as fused_qk_rmsnorm_bf16,
++            )
++        except ImportError:
++            # aiter older than the fused_qk_rmsnorm op (the CI docker AITER pin
++            # lags the op's introduction): pure-torch RMSNorm fallback so DSv4
++            # runs without bumping the pin / rebuilding the image. Equivalent to
++            # the non-aiter path below (self.q_a_layernorm(q),
++            # self.kv_a_layernorm(k_nope)) but matching the fused call signature;
++            # fp32 normalize then cast before the weight mul to mirror sglang
++            # RMSNorm.forward_native.
++            def fused_qk_rmsnorm_bf16(q, q_weight, q_eps, k, k_weight, k_eps):
++                def _rms(x, w, eps):
++                    dt = x.dtype
++                    xf = x.to(torch.float32)
++                    xf = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + eps)
++                    return xf.to(dt) * w
++
++                return _rms(q, q_weight, q_eps), _rms(k, k_weight, k_eps)
+ 
+     from aiter.ops.triton.batched_gemm_a8w8_a_per_token_group_prequant_w_per_batched_tensor_quant import (
+         batched_gemm_a8w8_a_per_token_group_prequant_w_per_batched_tensor_quant,
