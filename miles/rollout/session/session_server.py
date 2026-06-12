@@ -27,6 +27,9 @@ class SessionServer:
 
     def __init__(self, args, backend_url: str):
         self.backend_url = backend_url
+        self.args = args
+        self._worker_bases: list[str] = []
+        self._worker_rr = 0
         self.app = FastAPI()
 
         timeout = getattr(args, "miles_router_timeout", 600.0)
@@ -40,6 +43,29 @@ class SessionServer:
 
         setup_session_routes(self.app, self, args)
 
+    async def _resolve_worker_base(self):
+        if not self._worker_bases:
+            try:
+                import sglang_router
+                from packaging.version import parse
+
+                if parse(sglang_router.__version__) <= parse("0.2.1") or getattr(
+                    self.args, "use_miles_router", False
+                ):
+                    r = await self.client.get(f"{self.backend_url}/list_workers")
+                    self._worker_bases = list(r.json()["urls"])
+                else:
+                    r = await self.client.get(f"{self.backend_url}/workers")
+                    self._worker_bases = [w["url"] for w in r.json()["workers"]]
+            except Exception as exc:  # fall back to the router on any error
+                logger.warning("session worker resolve failed, using router: %s", exc)
+                return None
+        if not self._worker_bases:
+            return None
+        base = self._worker_bases[self._worker_rr % len(self._worker_bases)]
+        self._worker_rr += 1
+        return base
+
     async def do_proxy(
         self,
         request: Request,
@@ -47,7 +73,13 @@ class SessionServer:
         body: bytes | None = None,
         headers: dict | None = None,
     ) -> dict:
-        url = f"{self.backend_url}/{path}"
+        # AMD: the Rust router drops meta_info.output_token_logprobs from the
+        # session chat response (session-verify then 502s). Sessions send full
+        # input_ids each turn (stateless), so hit a worker engine directly.
+        base = self.backend_url
+        if path.endswith("v1/chat/completions"):
+            base = (await self._resolve_worker_base()) or self.backend_url
+        url = f"{base}/{path}"
         if request.url.query:
             url = f"{url}?{request.url.query}"
 
