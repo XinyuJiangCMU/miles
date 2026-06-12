@@ -85,7 +85,8 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             prefix_cache_info=_merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info),
         )
     except AssertionError as e:
-        getattr(e, "add_note", lambda *a: None)(f"{a=} {b=}")
+        if hasattr(e, "add_note"):
+            e.add_note(f"{a=} {b=}")
         raise
 
 
