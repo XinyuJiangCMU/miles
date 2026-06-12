@@ -1,5 +1,6 @@
 import logging
 import os
+import types
 from contextlib import contextmanager
 
 import torch
@@ -128,6 +129,19 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
 
     def __getattr__(self, name):
         return getattr(self.group, name)
+
+    def __copy__(self):
+        # megatron-bridge's remove_non_pickleables() shallow-copies (copy.copy) every
+        # object reachable from the TransformerConfig to strip non-pickleable members
+        # before broadcasting it during the megatron->HF weight sync. This class
+        # subclasses the C++ torch ProcessGroup, so copy.copy/pickle raise
+        # `TypeError: cannot pickle 'ReloadableProcessGroup' object`. The broadcast
+        # config only needs metadata (not a live group), so return a lightweight,
+        # picklable stand-in carrying the rank list.
+        return types.SimpleNamespace(**self.group_info)
+
+    def __deepcopy__(self, memo):
+        return self.__copy__()
 
     @staticmethod
     def destroy_process_groups():
