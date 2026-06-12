@@ -1,8 +1,8 @@
 diff --git a/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py b/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py
-index 3093c196b..4192e0b0a 100644
+index 3093c196b..607b794d0 100644
 --- a/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py
 +++ b/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py
-@@ -102,9 +102,26 @@ if _use_aiter:
+@@ -102,9 +102,35 @@ if _use_aiter:
              return q_out, k_out
  
      except ImportError:
@@ -17,16 +17,25 @@ index 3093c196b..4192e0b0a 100644
 +            # aiter older than the fused_qk_rmsnorm op (the CI docker AITER pin
 +            # lags the op's introduction): pure-torch RMSNorm fallback so DSv4
 +            # runs without bumping the pin / rebuilding the image. Equivalent to
-+            # the non-aiter path below (self.q_a_layernorm(q),
-+            # self.kv_a_layernorm(k_nope)) but matching the fused call signature;
-+            # fp32 normalize then cast before the weight mul to mirror sglang
-+            # RMSNorm.forward_native.
++            # the non-aiter path below (self.q_a_layernorm / kv_a_layernorm).
++            import logging as _logging
++
++            _logging.getLogger(__name__).warning(
++                "aiter has no fused_qk_rmsnorm op (pin predates it); using "
++                "pure-torch RMSNorm fallback for DSv4 q/k norm."
++            )
++
 +            def fused_qk_rmsnorm_bf16(q, q_weight, q_eps, k, k_weight, k_eps):
++                # Mirrors sglang RMSNorm.forward_native DEFAULT
++                # (cast_x_before_out_mul=False): normalize in fp32, multiply the
++                # weight in fp32, then cast -- this is bitwise-equal to the
++                # aiter.rms_norm kernel (verified). The true_on_policy path uses
++                # cast_x_before_out_mul=True and would differ by <=1 bf16 ULP,
++                # immaterial for DSv4 inference.
 +                def _rms(x, w, eps):
-+                    dt = x.dtype
 +                    xf = x.to(torch.float32)
 +                    xf = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + eps)
-+                    return xf.to(dt) * w
++                    return (xf * w).to(x.dtype)
 +
 +                return _rms(q, q_weight, q_eps), _rms(k, k_weight, k_eps)
  
