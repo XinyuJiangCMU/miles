@@ -11,6 +11,34 @@ import pybase64
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
+import sglang_router
+from packaging.version import parse
+
+from miles.utils.http_utils import get
+
+# AMD: the Rust sglang_router drops the return_routed_experts body flag, so
+# rollout-routing-replay never gets meta_info.routed_experts. When replay is on,
+# hit a worker engine directly (round-robin) instead of the router. Verified a
+# direct /generate returns routed_experts on gfx950. Pure-Python, no smg rebuild.
+_replay_worker_urls: list[str] = []
+_replay_worker_rr = [0]
+
+
+async def resolve_generate_url(args) -> str:
+    base = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    if not getattr(args, "use_rollout_routing_replay", False):
+        return f"{base}/generate"
+    if not _replay_worker_urls:
+        if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
+            resp = await get(f"{base}/list_workers")
+            _replay_worker_urls.extend(resp["urls"])
+        else:
+            resp = await get(f"{base}/workers")
+            _replay_worker_urls.extend(w["url"] for w in resp["workers"])
+    url = _replay_worker_urls[_replay_worker_rr[0] % len(_replay_worker_urls)]
+    _replay_worker_rr[0] += 1
+    return f"{url}/generate"
+
 
 # Make this an isolated function because users may want to compute their own
 def compute_prompt_ids_from_sample(state, sample, tools=None):
