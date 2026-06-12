@@ -70,6 +70,16 @@ def start_sglang_server(
     ]
     if enable_deterministic_inference:
         cmd.append("--enable-deterministic-inference")
+        # AMD prereq: triton. On ROCm/gfx950 deterministic inference defaults to
+        # FA3, which sgl_kernel lacks here (ImportError: flash_ops). Pin triton
+        # unless the caller already chose a backend.
+        try:
+            import torch as _torch
+
+            if getattr(_torch.version, "hip", None) and "--attention-backend" not in (extra_args or []):
+                cmd.extend(["--attention-backend", "triton"])
+        except Exception:
+            pass
     if extra_args:
         cmd.extend(extra_args)
 
