@@ -143,6 +143,22 @@ def execute_train(
     if (f := before_ray_job_submit) is not None:
         f()
 
+    # ROCm/gfx950: Ray clears HIP_VISIBLE_DEVICES for the num_gpus=0 ray-job
+    # entrypoint, so the driver hits "No HIP GPUs are available". Tell Ray not
+    # to clobber accelerator-visibility vars for this job (AMD prereq).
+    try:
+        import torch as _torch
+        _rocm_ray_env = (
+            {
+                "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES": "1",
+                "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES": "1",
+                "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
+            }
+            if getattr(_torch.version, "hip", None)
+            else {}
+        )
+    except Exception:
+        _rocm_ray_env = {}
     runtime_env_json = json.dumps(
         {
             "env_vars": {
@@ -170,6 +186,7 @@ def execute_train(
                     if config.cuda_core_dump
                     else {}
                 ),
+                **_rocm_ray_env,
                 **extra_env_vars,
                 **_parse_extra_env_vars(config.extra_env_vars),
             }
