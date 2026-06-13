@@ -12,20 +12,20 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
 - TransformerEngine: `2.8.0+a365f2de`
 
 ## Fixes applied to run
-1. **Py3.10 `StrEnum` guard** — `miles/utils/chat_template_utils/tito_tokenizer.py`
-   and `miles/utils/test_utils/session_verify_agent.py` do a bare
-   `from enum import StrEnum` (3.11+). Guarded with
-   `try: from enum import StrEnum / except ImportError: from backports.strenum import StrEnum`.
-   This is a conftest-import prerequisite (without it the StrEnum-dependent tests fail
-   at collection).
-2. **Py3.10 `Exception.add_note` guard** — 3 sites (`sglang_engine.py:261`,
-   `sample_utils.py:88`, `reloadable_process_group.py:282`) call `e.add_note(...)`
-   (a 3.11 API, PEP 678). Guarded with `getattr(e, "add_note", lambda *a: None)(...)`
-   so the original exception still propagates on 3.10. No control-flow change.
-3. **`hypothesis>=5.40`** — the ROCm base ships hypothesis `5.35.1`, whose
-   `HealthCheck` enum predates the `function_scoped_fixture` member (added in 5.40).
-   `requirements.txt` listed an unpinned `hypothesis`, so `pip install -r` kept the
-   stale base version. Pinned `hypothesis>=5.40` (+ `backports.strenum; python_version < "3.11"`).
+1. ~~**Py3.10 `StrEnum` guard** — `miles/utils/chat_template_utils/tito_tokenizer.py`~~
+   ~~and `miles/utils/test_utils/session_verify_agent.py` do a bare~~
+   ~~`from enum import StrEnum` (3.11+). Guarded with~~
+   ~~`try: from enum import StrEnum / except ImportError: from backports.strenum import StrEnum`.~~
+   ~~This is a conftest-import prerequisite (without it the StrEnum-dependent tests fail~~
+   ~~at collection).~~ ✅ fixed in 1339
+2. ~~**Py3.10 `Exception.add_note` guard** — 3 sites (`sglang_engine.py:261`,~~
+   ~~`sample_utils.py:88`, `reloadable_process_group.py:282`) call `e.add_note(...)`~~
+   ~~(a 3.11 API, PEP 678). Guarded with `getattr(e, "add_note", lambda *a: None)(...)`~~
+   ~~so the original exception still propagates on 3.10. No control-flow change.~~ ✅ fixed in 1339
+3. ~~**`hypothesis>=5.40`** — the ROCm base ships hypothesis `5.35.1`, whose~~
+   ~~`HealthCheck` enum predates the `function_scoped_fixture` member (added in 5.40).~~
+   ~~`requirements.txt` listed an unpinned `hypothesis`, so `pip install -r` kept the~~
+   ~~stale base version. Pinned `hypothesis>=5.40` (+ `backports.strenum; python_version < "3.11"`).~~ ✅ fixed in 1339
 4. **Rollout colocate GPU placement (ROCm)** — `_to_local_gpu_id` in
    `miles/backends/sglang_utils/sglang_engine.py` mis-maps ray-logical GPU ids when
    `HIP_VISIBLE_DEVICES` is a **non-0-based subset** (e.g. `"1,2"` to avoid a busy
@@ -49,10 +49,10 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
   first). Verified at 2 and 4 GPUs (gsm8k / gsm8k_async / lora).
 
 ## Error-type legend
-- **A** `AttributeError: function_scoped_fixture` — hypothesis 5.35.1 (ROCm base)
-  predates the 5.40 `HealthCheck` member; crashes at collection. Fixed by #3.
-- **B** `AttributeError: '...' object has no attribute 'add_note'` — Py3.11
-  `Exception.add_note` is absent on Py3.10. Fixed by #2.
+- ~~**A** `AttributeError: function_scoped_fixture` — hypothesis 5.35.1 (ROCm base)~~
+  ~~predates the 5.40 `HealthCheck` member; crashes at collection. Fixed by #3.~~ ✅ fixed in 1339
+- ~~**B** `AttributeError: '...' object has no attribute 'add_note'` — Py3.11~~
+  ~~`Exception.add_note` is absent on Py3.10. Fixed by #2.~~ ✅ fixed in 1339
 - **C** rollout colocate placement — both sglang engines land on the same physical
   GPU (`base_gpu_id` collapses to 0) → `RuntimeError: Not enough memory`. Fixed by #4.
 - **D** NV-only quant — `transformer_engine.pytorch.custom_recipes.quantization_nvfp4`
