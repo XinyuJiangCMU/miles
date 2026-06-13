@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+
 try:
     from enum import StrEnum
 except ImportError:
