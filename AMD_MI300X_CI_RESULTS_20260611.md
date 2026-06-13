@@ -26,35 +26,18 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
    ~~`HealthCheck` enum predates the `function_scoped_fixture` member (added in 5.40).~~
    ~~`requirements.txt` listed an unpinned `hypothesis`, so `pip install -r` kept the~~
    ~~stale base version. Pinned `hypothesis>=5.40` (+ `backports.strenum; python_version < "3.11"`).~~ ✅ fixed in 1339
-4. **Rollout colocate GPU placement (ROCm)** — `_to_local_gpu_id` in
-   `miles/backends/sglang_utils/sglang_engine.py` mis-maps ray-logical GPU ids when
-   `HIP_VISIBLE_DEVICES` is a **non-0-based subset** (e.g. `"1,2"` to avoid a busy
-   GPU 0): a logical id that numerically collides with a physical id in the visible
-   list is routed through the `.index()` (physical) path, so both rollout engines
-   collapse onto the same physical GPU (`base_gpu_id` → 0 for both) → KV-cache OOM.
-   Fixed by preferring the **local-id interpretation first**. Root cause of the gsm8k
-   `Server process terminated unexpectedly` / rollout-engine `Not enough memory`.
-   **Same root cause** also hits `get_local_gpu_id` in `miles/ray/train_actor.py`
-   (`cvd.split(",").index(str(ray.get_gpu_ids()[0]))` → `ValueError: '0' is not in list`
-   when the train actor starts under `HIP_VISIBLE_DEVICES="1,2"`); fixed the same way
-   (local-id first). Both call sites must be patched together.
 
 ## Fix branches
-- `dev/amd-rocm-ci-0611` — integration branch: merged MI300/MI350 ROCm Dockerfile + py3.10
-  StrEnum/add_note + `hypothesis>=5.40` + `backports.strenum`.
-- `compat/py310-strenum-add-note` (PR #8) — standalone py3.10 compat: StrEnum + add_note +
-  `hypothesis>=5.40` + `backports.strenum; python_version < "3.11"`.
-- `fix/rocm-rollout-gpu-placement` (PR #9) — the rollout/train GPU-placement fix (Fix #4:
-  `_to_local_gpu_id` in `sglang_engine.py` + `get_local_gpu_id` in `train_actor.py`, local-id
-  first). Verified at 2 and 4 GPUs (gsm8k / gsm8k_async / lora).
+- ~~`dev/amd-rocm-ci-0611` — integration branch: merged MI300/MI350 ROCm Dockerfile + py3.10~~
+  ~~StrEnum/add_note + `hypothesis>=5.40` + `backports.strenum`.~~
+- ~~`compat/py310-strenum-add-note` (PR 8) — standalone py3.10 compat: StrEnum + add_note +~~
+  ~~`hypothesis>=5.40` + `backports.strenum; python_version < "3.11"`.~~
 
 ## Error-type legend
 - ~~**A** `AttributeError: function_scoped_fixture` — hypothesis 5.35.1 (ROCm base)~~
-  ~~predates the 5.40 `HealthCheck` member; crashes at collection. Fixed by #3.~~ ✅ fixed in 1339
+  ~~predates the 5.40 `HealthCheck` member; crashes at collection. Fixed by 3.~~ ✅ fixed in 1339
 - ~~**B** `AttributeError: '...' object has no attribute 'add_note'` — Py3.11~~
-  ~~`Exception.add_note` is absent on Py3.10. Fixed by #2.~~ ✅ fixed in 1339
-- **C** rollout colocate placement — both sglang engines land on the same physical
-  GPU (`base_gpu_id` collapses to 0) → `RuntimeError: Not enough memory`. Fixed by #4.
+  ~~`Exception.add_note` is absent on Py3.10. Fixed by 2.~~ ✅ fixed in 1339
 - **D** NV-only quant — `transformer_engine.pytorch.custom_recipes.quantization_nvfp4`
   (NVFP4) / `fake_int4_quant_cuda` (int4 CUDA kernel) are absent / NV-proprietary on
   ROCm. NVFP4 is an NV block format (MI350 hardware uses **MXFP4**, OCP microscaling).
@@ -64,8 +47,8 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
 - **F** `RuntimeError: Unable to find any suitable algorithms` — hipBLASLt has no
   algorithm for the TE `layernorm_linear` backward wgrad GEMM with a fused bias-gradient
   (BGRADB) epilogue on an fp32-accumulate output (training-side, not attention; triggered
-  by Qwen `--add-qkv-bias` + `--accumulate-allreduce-grads-in-fp32`). Surfaces only once
-  placement is fixed and training actually runs. The MI355X run fixed this with a TE wgrad
+  by Qwen `--add-qkv-bias` + `--accumulate-allreduce-grads-in-fp32`). Surfaces once
+  training actually runs. The MI355X run fixed this with a TE wgrad
   patch (skip the fusion on the ROCm fp32-accumulate path, reduce grad_bias separately).
 - **G** `ImportError: Can not import FA3 in sgl_kernel` — the ROCm `sgl_kernel` build has no
   FA3 attention; the sglang scheduler crashes at startup unless `--attention-backend triton`
@@ -73,33 +56,35 @@ MI350 (gfx950)-only, so NV-format quant tests are out of scope here (legend **D*
 
 ---
 
-## stage-a-cpu
+## stage-a-cpu / stage-b-cpu
 
-Full CPU unit-test suite (`tests/fast`), with the three py3.10 fixes applied.
-**Result: 2692 passed / 6 failed / 41 skipped / 0 errors** (7m30s).
+These CPU suites run on a generic CPU runner (no GPU, not the ROCm image), so they are platform-independent — AMD CI does not run them on AMD hardware.
 
-| Bucket | Count | What it is |
+~~Full CPU unit-test suite (`tests/fast`), with the three py3.10 fixes applied.~~
+~~**Result: 2692 passed / 6 failed / 41 skipped / 0 errors** (7m30s).~~
+
+| ~~Bucket~~ | ~~Count~~ | ~~What it is~~ |
 |---|---|---|
-| passed | 2692 | All logic/unit tests pass on gfx942. This includes the 33 tests that used to error at collection (now fixed by Fix #3) and the 7 that used to fail (Fix #2), plus `real_ray/*` (passes once `RAY_ADDRESS` is unset so the fixture starts its own local cluster). |
-| failed | 6 | Only `test_loss_snapshot` (grpo/sft) — Error **E**. gfx942 recompute vs a CUDA-saved snapshot under a **bitwise** compare; a numeric-tolerance issue, not a code bug. |
-| skipped | 41 | None are AMD/ROCm-related — same 41 would skip on NVIDIA. Breakdown below. |
-| errors | 0 | The old failures are gone: 33 collection errors (hypothesis `function_scoped_fixture`, Fix #3) and 7 `add_note` failures (Fix #2). |
+| ~~passed~~ | ~~2692~~ | ~~All logic/unit tests pass on gfx942. This includes the 33 tests that used to error at collection (now fixed by Fix 3) and the 7 that used to fail (Fix 2), plus `real_ray/*` (passes once `RAY_ADDRESS` is unset so the fixture starts its own local cluster).~~ |
+| ~~failed~~ | ~~6~~ | ~~Only `test_loss_snapshot` (grpo/sft) — Error **E**. gfx942 recompute vs a CUDA-saved snapshot under a **bitwise** compare; a numeric-tolerance issue, not a code bug.~~ |
+| ~~skipped~~ | ~~41~~ | ~~None are AMD/ROCm-related — same 41 would skip on NVIDIA. Breakdown below.~~ |
+| ~~errors~~ | ~~0~~ | ~~The old failures are gone: 33 collection errors (hypothesis `function_scoped_fixture`, Fix 3) and 7 `add_note` failures (Fix 2).~~ |
 
-The 41 skips, by reason (all platform-independent):
+~~The 41 skips, by reason (all platform-independent):~~
 
-| Count | Reason |
+| ~~Count~~ | ~~Reason~~ |
 |---|---|
-| 10 | DeepSeek V3.2 / V4 model files not present on this machine |
-| 18 | Test not written yet — marked `not tested yet` / `TODO: implement` |
-| 5 | Old `sglang_rollout` path does not support `rollout_max_context_len` |
-| 4 | Known `agentic_tool_call` limitations (abort / partial_rollout) |
-| 2 | `multi_turn_multi_samples` empty-list edge case |
-| 2 | `real_ray` flaky actor-termination race (pre-existing FIXME #1282) |
+| ~~10~~ | ~~DeepSeek V3.2 / V4 model files not present on this machine~~ |
+| ~~18~~ | ~~Test not written yet — marked `not tested yet` / `TODO: implement`~~ |
+| ~~5~~ | ~~Old `sglang_rollout` path does not support `rollout_max_context_len`~~ |
+| ~~4~~ | ~~Known `agentic_tool_call` limitations (abort / partial_rollout)~~ |
+| ~~2~~ | ~~`multi_turn_multi_samples` empty-list edge case~~ |
+| ~~2~~ | ~~`real_ray` flaky actor-termination race (pre-existing FIXME 1282)~~ |
 
-> Note: hypothesis must be `>=5.40` for the 33 collection errors to stay fixed; the
-> existing image still ships 5.35.1, so this needs an image rebuild or `pip install -U`.
+> ~~Note: hypothesis must be `>=5.40` for the 33 collection errors to stay fixed; the~~
+> ~~existing image still ships 5.35.1, so this needs an image rebuild or `pip install -U`.~~
 
-stage-b-cpu: **124 passed / 0 failed.**
+~~stage-b-cpu: **124 passed / 0 failed.**~~
 
 ---
 
@@ -119,13 +104,8 @@ stage-b-cpu: **124 passed / 0 failed.**
 
 | # | Test path | Ran | Result | Notes |
 |---|---|---|---|---|
-| 1 | `tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py` | yes | placement **FIXED & verified**; blocks later at colocate weight-sync | 2-GPU colocate GRPO. Was crashing at rollout init (both engines on the same GPU → OOM); **Fix #4** splits them (`base_gpu_id 0,1`, no OOM) and train-actor init passes. Then blocks at the first `update_weights` (megatron→HF colocate weight-sync), where the ray job exits 1 — a separate weight-sync issue (FINAL_REPORT `cannot pickle ReloadableProcessGroup`), out of scope here. |
-| 2 | `tests/e2e/long/test_qwen2.5_0.5B_gsm8k_async.py` | yes | placement OK → FAIL (**F**) | async/disaggregated (actor 1 GPU + rollout 1 GPU, **no colocate**). **Placement fix verified here too**: rollout engine starts on `base_gpu_id=1`, KV allocated (no OOM, no `ValueError`). Training then hits `RuntimeError: Unable to find any suitable algorithms` (Error **F**, hipBLASLt wgrad GEMM) → train actor dies → rollout goes `no_available_workers` (503). Same Error **F** as the MI355X run; needs the TE wgrad patch to proceed. |
-
-> Note (placement): the same root cause (Fix #4) is the likely explanation for the
-> FINAL_REPORT rollout-engine failures (`Request is disconnected from the client side`
-> / `no_available_workers`) on the gsm8k short/async and ckpt e2e tests, which all
-> stage through the same colocate rollout-engine startup.
+| 1 | `tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py` | yes | blocks at colocate weight-sync | 2-GPU colocate GRPO. Blocks at the first `update_weights` (megatron→HF colocate weight-sync), where the ray job exits 1 — a weight-sync issue (`cannot pickle ReloadableProcessGroup`). |
+| 2 | `tests/e2e/long/test_qwen2.5_0.5B_gsm8k_async.py` | yes | FAIL (**F**) | async/disaggregated (actor 1 GPU + rollout 1 GPU, **no colocate**). Training hits `RuntimeError: Unable to find any suitable algorithms` (Error **F**, hipBLASLt wgrad GEMM) → train actor dies → rollout goes `no_available_workers` (503). Same Error **F** as the MI355X run; needs the TE wgrad patch to proceed. |
 
 ---
 
@@ -133,14 +113,14 @@ stage-b-cpu: **124 passed / 0 failed.**
 
 | # | Test path | Ran | Result | Notes |
 |---|---|---|---|---|
-| 1 | `tests/e2e/precision/test_hf_attention_cp_relayout.py` | yes | **PASS** | Pure-precision CP=4 attention relayout (torch.distributed, no rollout/colocate). `zigzag->packed`, `roundtrip`, `backward` all PASS on gfx942 — 4-GPU attention CP relayout works; placement fixes don't regress non-rollout e2e. |
+| 1 | `tests/e2e/precision/test_hf_attention_cp_relayout.py` | yes | **PASS** | Pure-precision CP=4 attention relayout (torch.distributed, no rollout/colocate). `zigzag->packed`, `roundtrip`, `backward` all PASS on gfx942 — 4-GPU attention CP relayout works. |
 | 2 | `tests/e2e/sglang/test_chat_input_ids_equivalence.py` | yes | FAIL (**G**) | sglang server scheduler crashes at startup: `ImportError: Can not import FA3 in sgl_kernel` (ROCm `sgl_kernel` has no FA3). Needs `--attention-backend triton` pinned on ROCm (same fix as the MI355X run). |
-| 3 | `tests/e2e/lora/test_lora_qwen2.5_0.5B.py` | yes | **PASS** | 4-GPU LoRA GRPO. **Placement fix verified at 4 GPUs**: the 4 sglang engines split across `base_gpu_id=0,1,2,3`. LoRA adapter sync (`load/unload_lora_adapter_from_tensors`), training and checkpointing all work; ray job **succeeded**. First stage-c rollout+train e2e to pass end-to-end on gfx942 — LoRA adapter sync avoids the full megatron→HF weight-sync path that blocks gsm8k (Error B area). |
+| 3 | `tests/e2e/lora/test_lora_qwen2.5_0.5B.py` | yes | **PASS** | 4-GPU LoRA GRPO. LoRA adapter sync (`load/unload_lora_adapter_from_tensors`), training and checkpointing all work; ray job **succeeded**. First stage-c rollout+train e2e to pass end-to-end on gfx942 — LoRA adapter sync avoids the full megatron→HF weight-sync path that blocks gsm8k (Error B area). |
 
 (Remaining stage-c-4-gpu / stage-c-8-gpu entries are large-model rollout/training e2e —
 qwen3-30B, glm5-744b, mimo-7B, sessions, ckpt, etc. — needing big models and 4–8 GPUs.
 Their per-test root causes are catalogued in FINAL_REPORT; the rollout/training ones are
-expected to behave like gsm8k / gsm8k_async above once placement is fixed: rollout starts,
+expected to behave like gsm8k / gsm8k_async above: rollout starts,
 then hits the colocate weight-sync / Error **F** wgrad-GEMM gaps.)
 
 ## Notes on the broader GPU e2e set
