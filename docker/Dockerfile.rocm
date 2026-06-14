@@ -6,6 +6,15 @@
 # 2. rocm/sgl-dev:MI300-latest  (gfx942, ROCm 7.0 / MI300 / MI325)
 #    build-arg:GPU_ARCH=gfx942
 #    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
+#
+# AMD / Python 3.10 enablement bundled into this image (in-flight, not yet upstreamed):
+#   - miles py3.10 (StrEnum + add_note guards):
+#       https://github.com/radixark/miles/pull/1339  -> cloned from the fork branch below
+#   - sglang import-safe HIP capability probes (no-GPU driver):
+#       https://github.com/XinyuJiangCMU/sglang/pull/22  -> applied as sglang_import_guards.py
+#   - megatron-bridge allow Python 3.10 (relax requires-python):
+#       https://github.com/XinyuJiangCMU/Megatron-Bridge/pull/1  -> pinned to the fork branch below
+# Drop each indirection once its PR merges upstream.
 
 ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
@@ -57,6 +66,7 @@ ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 COPY docker/amd_patch/latest/megatron.patch /tmp/amd_patch/megatron.patch
 COPY docker/amd_patch/latest/miles.patch /tmp/amd_patch/miles.patch
 COPY docker/amd_patch/latest/sglang_attn_bridge /tmp/amd_patch/sglang_attn_bridge
+COPY docker/amd_patch/latest/sglang_import_guards.py /tmp/amd_patch/sglang_import_guards.py
 COPY requirements.txt /tmp/requirements.txt
 
 # ======================================== Apt dependencies =====================================
@@ -118,8 +128,13 @@ RUN cd /sgl-workspace/sglang && \
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
 
+# Make sglang HIP capability probes import-safe on a GPU-less process (e.g. the
+# 0-GPU Ray job driver). Upstreamed in XinyuJiangCMU/sglang PR 22; drop once merged
+# into the pinned sglang branch.
+RUN python3 /tmp/amd_patch/sglang_import_guards.py
+
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
-RUN pip install git+https://github.com/yushengsu-thu/Megatron-Bridge.git@merged-megatron-0.16.0rc0-miles --no-deps --no-build-isolation
+RUN pip install git+https://github.com/XinyuJiangCMU/Megatron-Bridge.git@relax-requires-python-py310-20260614 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
@@ -140,22 +155,15 @@ RUN pip install "numpy<2"
 
 # ====================================== Install main package ===================================
 
-RUN git clone https://github.com/radixark/miles.git /root/miles && \
+# Clone from the py3.10 fork branch (StrEnum + add_note guards in source) until
+# that lands in radixark/miles main. TODO: revert to radixark/miles@${MILES_COMMIT}.
+RUN git clone https://github.com/XinyuJiangCMU/miles.git /root/miles && \
     cd /root/miles && \
-    git checkout ${MILES_COMMIT} && \
+    git checkout compat/py310-strenum-add-note && \
     git apply --3way --unidiff-zero /tmp/amd_patch/miles.patch && \
     mkdir -p miles/backends/experimental/fsdp_utils/sglang_attn_bridge && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
-
-# 3.10 compatibility shim: miles uses the Python 3.11 StrEnum, but the ROCm sglang base is py3.10
-# (the NV/CUDA base is already py3.12). Backport StrEnum on <3.11 and make the imports
-# version-guarded. TODO: remove once the ROCm base is py3.11+.
-RUN pip install backports.strenum && \
-    for f in $(grep -rlE '^from enum import .*StrEnum' /root/miles/miles || true); do \
-      sed -i -E 's/^from enum import Enum, StrEnum$/from enum import Enum\ntry:\n    from enum import StrEnum\nexcept ImportError:\n    from backports.strenum import StrEnum/' "$f" && \
-      sed -i -E 's/^from enum import StrEnum$/try:\n    from enum import StrEnum\nexcept ImportError:\n    from backports.strenum import StrEnum/' "$f"; \
-    done
 
 # ====================================== Runtime knobs ==========================================
 
