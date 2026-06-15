@@ -67,6 +67,7 @@ COPY docker/amd_patch/latest/megatron.patch /tmp/amd_patch/megatron.patch
 COPY docker/amd_patch/latest/miles.patch /tmp/amd_patch/miles.patch
 COPY docker/amd_patch/latest/sglang_attn_bridge /tmp/amd_patch/sglang_attn_bridge
 COPY docker/amd_patch/latest/sglang_import_guards.py /tmp/amd_patch/sglang_import_guards.py
+COPY docker/amd_patch/latest/te_wgrad_bgrad_fix.py /tmp/amd_patch/te_wgrad_bgrad_fix.py
 COPY requirements.txt /tmp/requirements.txt
 
 # ======================================== Apt dependencies =====================================
@@ -91,6 +92,11 @@ RUN rm -rf /root/TransformerEngine && \
     git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
     cd /root/TransformerEngine && \
     NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v
+
+# Make the ROCm wgrad GEMM import-safe against the missing hipBLASLt BGRADB algorithm
+# (bf16 -> fp32-accumulate wgrad + fused bias-grad). Upstreamed in the
+# ROCm/TransformerEngine fork PR; drop once it lands in the pinned TE branch.
+RUN python3 /tmp/amd_patch/te_wgrad_bgrad_fix.py
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
