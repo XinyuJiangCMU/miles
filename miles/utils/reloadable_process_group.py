@@ -131,6 +131,15 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
 
     @staticmethod
     def destroy_process_groups():
+        if torch.version.hip is not None:
+            # On ROCm, neither dist.destroy_process_group() (ncclCommDestroy) nor an
+            # explicit ncclCommAbort releases the RCCL communicator device-side
+            # buffers, so destroying and recreating the process groups every offload
+            # cycle leaks several GB per training iteration and OOMs colocate
+            # --offload-train runs. Keep the communicators alive across
+            # torch_memory_saver pause/resume instead (reload is then a no-op since
+            # the groups stay valid). The CUDA path below is unchanged.
+            return
         pid = os.getpid()
         for reloadable_group in ReloadableProcessGroup.GROUPS.get(pid, []):
             if reloadable_group.group is None:
