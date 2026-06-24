@@ -2,42 +2,36 @@
 
 ## What this is
 
-In colocate offload-train training, GPU memory grows every step and OOMs within tens of steps.
-The root cause is **a ROCm 7.2 regression**, not a miles/Megatron/sglang bug: on ROCm 7.2,
-`hipFree` no longer returns the physical pages of an allocation once it has been IPC-exported
-(via `hipIpcGetMemHandle`). Colocate training churns IPC-exported buffers every step (RCCL
-communicators and the weight-sync flatten buffer), so each step strands memory until OOM.
+In colocate offload-train training the GPU after-offload memory floor rises every step and
+OOMs within tens of steps. This is a **ROCm 7.2 regression**, not a miles/Megatron/sglang bug:
+on ROCm 7.2, `hipFree` no longer returns the physical pages of an allocation once it has been
+IPC-exported (via `hipIpcGetMemHandle`), so the per-step churn of IPC-exported buffers strands
+memory until OOM.
 
-This directory overlays a rebuilt `libhsa-runtime64.so` that fixes the leak, without touching
-sglang or anything else in the image.
+This directory rebuilds `libhsa-runtime64.so` from source with the fix and overlays it on the
+miles image — without touching sglang or anything else.
 
 ## Versions
 
-| ROCm | affected? |
+| ROCm | affected |
 |---|---|
 | 7.0 / 7.1 | no (pages are returned correctly) |
-| 7.2.0 / 7.2.1 / 7.2.2 / 7.2.3 / 7.2.4 (latest) | **yes** |
-| ROCm/rocm-systems `develop` | already fixed (reworked); ships in a future release |
+| 7.2.0 / 7.2.1 / 7.2.2 / 7.2.3 / 7.2.4 (all current 7.2 releases) | yes |
+| ROCm/rocm-systems develop | already reworked/fixed; ships in a future release |
 
-So you can also just use ROCm 7.0/7.1, or wait for the next ROCm release. This overlay is for
+So ROCm 7.0/7.1 also avoid the bug, and a future ROCm release will too. This overlay is only for
 staying on ROCm 7.2.
 
-## The fix
+## Root cause and fix
 
-The regression was introduced by the ROCR-Runtime commit "rocr: Make IPC Handles Unique" (#795):
-`Runtime::IPCCreate` takes a libdrm BO reference via `amdgpu_bo_import` and stores it in
-`allocation_map_[ptr].ldrm_bo`, but `Runtime::FreeMemory` only clears the BO metadata and never
-calls `amdgpu_bo_free`, so the reference outlives the kfd free and the kernel never reclaims the
-pages. The fix (`amdgpu_bo_free.patch`) adds the missing `amdgpu_bo_free` in `FreeMemory`:
-
-```cpp
-DRM_CALL(amdgpu_bo_free(it->second.ldrm_bo));
-it->second.ldrm_bo = nullptr;
-```
-
-`libhsa-runtime64.so.1.18.70200` here is the ROCm 7.2.0 ROCR-Runtime source built with that
-patch. SONAME is `libhsa-runtime64.so.1` (unchanged), ABI-compatible with the rest of the 7.2
-image.
+The regression came from the ROCR-Runtime change titled "rocr: Make IPC Handles Unique"
+(commit 2f384538, first in tag rocm-7.2.0): `Runtime::IPCCreate` does an `amdgpu_bo_import` to
+read/write dedup metadata on the exported buffer but keeps that libdrm reference
+(`allocation_map_[ptr].ldrm_bo`), and nothing ever releases it, so the kernel never reclaims the
+pages after the kfd free. `amdgpu_bo_free.patch` releases that transient import reference right
+after the metadata step (covering both metadata branches), which is semantically equivalent to —
+but not the same diff as — the rework already on the upstream `develop` branch. This patch is a
+minimal change against the rocm-7.2.0 source and has not been reviewed upstream; it is a stopgap.
 
 ## Use it
 
@@ -46,18 +40,20 @@ docker build -t xinyujiangcmu/miles:rocm720-mi35x-20260621-hsapatch \
   -f docker/rocm72-hsa-patch/Dockerfile docker/rocm72-hsa-patch
 ```
 
-A prebuilt image is also pushed at `xinyujiangcmu/miles:rocm720-mi35x-20260621-hsapatch`.
+The multi-stage Dockerfile builds the patched `libhsa-runtime64.so` from the ROCm 7.2.0
+`ROCR-Runtime` source (applying `amdgpu_bo_free.patch`) and copies it over `/opt/rocm/lib` in the
+miles image. The SONAME (`libhsa-runtime64.so.1`) is unchanged, so nothing else is rebuilt. A
+prebuilt image is also published at the tag above for convenience.
 
 ## Verification
 
 A 30-line HIP repro (`hipExtMallocWithFlags(256MB) -> hipIpcGetMemHandle -> hipFree`, looped,
-measured with `hipMemGetInfo`): with the stock 7.2 runtime it leaks 256 MB/iter; with this
-`.so` it is flat at 0 MB/iter. End-to-end (Qwen3-30B-A3B FP8 colocate) the GPU after-offload
-floor stays flat instead of growing to OOM.
+measured with `hipMemGetInfo`): the stock 7.2 runtime leaks 256 MB/iter; the patched build is
+flat at 0. End-to-end on Qwen3-30B-A3B FP8 colocate the GPU after-offload floor stays flat
+instead of growing to OOM.
 
-## Rebuilding `libhsa-runtime64.so` from source
+## Upstream tracking
 
-Apply `amdgpu_bo_free.patch` to the ROCm 7.2.0 `ROCR-Runtime` tree
-(`runtime/hsa-runtime/core/runtime/runtime.cpp`), then build the `hsa-runtime64` target from the
-top-level CMake project in a ROCm 7.2 + LLVM dev environment with `ROCM_PATCH_VERSION=70200`.
-The resulting `build/.../libhsa-runtime64.so.1.18.*` is what is shipped here.
+Regression and version bisect are tracked in this repo (issue: the ROCm 7.2 hipFree IPC-export
+regression). Remove this overlay once a ROCm 7.2.x release ships the FreeMemory/IPCCreate fix
+(or move to ROCm 7.0/7.1).
