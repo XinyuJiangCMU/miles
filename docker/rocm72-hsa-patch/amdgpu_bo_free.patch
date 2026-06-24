@@ -1,40 +1,30 @@
 diff --git a/runtime/hsa-runtime/core/runtime/runtime.cpp b/runtime/hsa-runtime/core/runtime/runtime.cpp
-index 4450f4bc..f63408ff 100644
+index 4450f4bc..3be0563b 100644
 --- a/runtime/hsa-runtime/core/runtime/runtime.cpp
 +++ b/runtime/hsa-runtime/core/runtime/runtime.cpp
-@@ -386,6 +386,12 @@ hsa_status_t Runtime::FreeMemory(void* ptr) {
+@@ -386,6 +386,8 @@ hsa_status_t Runtime::FreeMemory(void* ptr) {
          amdgpu_bo_metadata zero_metadata = {0};
          memset(zero_metadata.umd_metadata, 0, sizeof(uint32_t));
          DRM_CALL(amdgpu_bo_set_metadata(it->second.ldrm_bo, &zero_metadata));
-+
-+        // Exporter-side fix (ROCm 7.2): release the import reference IPCCreate took to write
-+        // the dedup metadata. The set_metadata(zero) above is preserved (free-time clear);
-+        // this only adds the missing free so the kernel reclaims the pages after hipFree.
 +        DRM_CALL(amdgpu_bo_free(it->second.ldrm_bo));
 +        it->second.ldrm_bo = nullptr;
        }
  #else
        assert(!"Unimplemented!");
-@@ -1423,6 +1429,8 @@ hsa_status_t Runtime::IPCCreate(void* ptr, size_t len, hsa_amd_ipc_memory_t* han
+@@ -1423,6 +1425,7 @@ hsa_status_t Runtime::IPCCreate(void* ptr, size_t len, hsa_amd_ipc_memory_t* han
        struct amdgpu_bo_info info = {0};
        if (!DRM_CALL(amdgpu_bo_query_info(res.buf_handle, &info)) && !!info.metadata.size_metadata) {
          handle->handle[7] = info.metadata.umd_metadata[0];
-+        // Pre-existing dedup-hit leak fix: release this redundant re-export import reference.
 +        DRM_CALL(amdgpu_bo_free(res.buf_handle));
        } else {
          amdgpu_bo_metadata buf_info = {0};
          buf_info.size_metadata = sizeof(uint32_t);
-@@ -1603,6 +1611,13 @@ hsa_status_t Runtime::IPCAttach(const hsa_amd_ipc_memory_t* handle, size_t len,
+@@ -1602,6 +1605,8 @@ hsa_status_t Runtime::IPCAttach(const hsa_amd_ipc_memory_t* handle, size_t len,
+           // Only check metadata for GPU memory
            struct amdgpu_bo_info info = {0};
            int ret = DRM_CALL(amdgpu_bo_query_info(allocation_map_[importAddress].ldrm_bo, &info));
- 
-+          // Consumer-side fix (ROCm 7.2): the import reference is only needed to read the
-+          // dedup metadata above (now in `info`); the GPU mapping is owned by the thunk.
-+          // Release it here -- before the validation return below, so the error path frees it
-+          // too -- otherwise mapMemoryToNodes/fixFragment orphans it and IPCDetach never frees it.
 +          DRM_CALL(amdgpu_bo_free(allocation_map_[importAddress].ldrm_bo));
 +          allocation_map_[importAddress].ldrm_bo = NULL;
-+
+ 
            // Validate metadata for IPC handle
            if (ret || info.metadata.umd_metadata[0] != importHandle.handle[7]) {
-               fprintf(stderr, "IPC Attach: Invalid IPC handle! %u and %u\n", importHandle.handle[7], info.metadata.umd_metadata[0]);
