@@ -1,5 +1,5 @@
 diff --git a/runtime/hsa-runtime/core/runtime/runtime.cpp b/runtime/hsa-runtime/core/runtime/runtime.cpp
-index 4450f4bc..b147bfdf 100644
+index 4450f4bc..f63408ff 100644
 --- a/runtime/hsa-runtime/core/runtime/runtime.cpp
 +++ b/runtime/hsa-runtime/core/runtime/runtime.cpp
 @@ -386,6 +386,12 @@ hsa_status_t Runtime::FreeMemory(void* ptr) {
@@ -15,7 +15,16 @@ index 4450f4bc..b147bfdf 100644
        }
  #else
        assert(!"Unimplemented!");
-@@ -1603,6 +1609,13 @@ hsa_status_t Runtime::IPCAttach(const hsa_amd_ipc_memory_t* handle, size_t len,
+@@ -1423,6 +1429,8 @@ hsa_status_t Runtime::IPCCreate(void* ptr, size_t len, hsa_amd_ipc_memory_t* han
+       struct amdgpu_bo_info info = {0};
+       if (!DRM_CALL(amdgpu_bo_query_info(res.buf_handle, &info)) && !!info.metadata.size_metadata) {
+         handle->handle[7] = info.metadata.umd_metadata[0];
++        // Pre-existing dedup-hit leak fix: release this redundant re-export import reference.
++        DRM_CALL(amdgpu_bo_free(res.buf_handle));
+       } else {
+         amdgpu_bo_metadata buf_info = {0};
+         buf_info.size_metadata = sizeof(uint32_t);
+@@ -1603,6 +1611,13 @@ hsa_status_t Runtime::IPCAttach(const hsa_amd_ipc_memory_t* handle, size_t len,
            struct amdgpu_bo_info info = {0};
            int ret = DRM_CALL(amdgpu_bo_query_info(allocation_map_[importAddress].ldrm_bo, &info));
  

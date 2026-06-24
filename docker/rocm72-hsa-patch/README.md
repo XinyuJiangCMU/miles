@@ -66,5 +66,9 @@ A prebuilt image is also published at that tag for convenience.
 
 ## Upstream tracking
 
-The regression and version bisect are tracked in this repo's issue. Remove this overlay once a
-ROCm 7.2.x release ships the fix (or use ROCm 7.0/7.1).
+The regression and version bisect are tracked in #12. Remove this overlay once a ROCm 7.2.x
+release ships the fix (or use ROCm 7.0/7.1).
+
+`apply_fix.py` also releases a third, pre-existing import reference in `IPCCreate`'s dedup-hit
+branch (re-exporting a still-live buffer), which the base colocate path does not hit but which
+review flagged as leaking on the same family of paths.
