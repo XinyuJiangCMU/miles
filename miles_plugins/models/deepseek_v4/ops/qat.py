@@ -1,6 +1,13 @@
 import torch
 
-from tile_kernels.quant import per_token_cast_back
+try:
+    from tile_kernels.quant import per_token_cast_back
+except ImportError:  # ROCm: deepseek-ai/TileKernels is CUDA-only — stub to defer until a torch impl lands
+    def per_token_cast_back(*args, **kwargs):
+        raise NotImplementedError(
+            "ROCm stub: tile_kernels.quant.per_token_cast_back unavailable (TileKernels is CUDA-only). "
+            "Needs a torch reimplementation before FP8 QAT can run on gfx950."
+        )
 
 from .kernel.act_quant import act_quant
 

@@ -15,15 +15,34 @@ import torch
 import torch.nn.functional as F
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
-from tile_kernels.modeling.mhc.ops import (
-    mhc_head_compute_mix,
-    mhc_post,
-    mhc_pre_apply_mix,
-    mhc_pre_big_fuse,
-    mhc_pre_norm_fn,
-    mhc_pre_split_mixes,
-    sinkhorn_normalize,
-)
+try:
+    from tile_kernels.modeling.mhc.ops import (
+        mhc_head_compute_mix,
+        mhc_post,
+        mhc_pre_apply_mix,
+        mhc_pre_big_fuse,
+        mhc_pre_norm_fn,
+        mhc_pre_split_mixes,
+        sinkhorn_normalize,
+    )
+except ImportError:  # ROCm: deepseek-ai/TileKernels is CUDA-only — stub to defer until a torch impl lands
+
+    def _mhc_rocm_stub(_name):
+        def _f(*args, **kwargs):
+            raise NotImplementedError(
+                f"ROCm stub: tile_kernels.modeling.mhc.ops.{_name} unavailable (TileKernels is CUDA-only). "
+                "Needs a torch reimplementation before DSv4 hyper-connection can run on gfx950."
+            )
+
+        return _f
+
+    mhc_head_compute_mix = _mhc_rocm_stub("mhc_head_compute_mix")
+    mhc_post = _mhc_rocm_stub("mhc_post")
+    mhc_pre_apply_mix = _mhc_rocm_stub("mhc_pre_apply_mix")
+    mhc_pre_big_fuse = _mhc_rocm_stub("mhc_pre_big_fuse")
+    mhc_pre_norm_fn = _mhc_rocm_stub("mhc_pre_norm_fn")
+    mhc_pre_split_mixes = _mhc_rocm_stub("mhc_pre_split_mixes")
+    sinkhorn_normalize = _mhc_rocm_stub("sinkhorn_normalize")
 from torch import Tensor
 
 # DeepSeek V4 originally used post = 2 * sigmoid(...) for the post-layer mix
