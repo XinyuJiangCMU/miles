@@ -100,6 +100,7 @@ RUN rm -rf /root/Megatron-LM && \
 # (rocm/sgl-dev:v0.5.14 already ships DSv4 ops). NO uninstall, NO sgl-kernel rebuild — that's what
 # dropped the DSv4 ops (E10). Result: python = sglang-miles (RL changes), sgl_kernel = base.
 RUN cd /sgl-workspace/sglang && \
+    git reset --hard && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \
