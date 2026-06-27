@@ -475,6 +475,11 @@ def _train(args: ScriptArgs):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
+        # ROCm/gfx950: DSv4 sgl-kernel topk_v2 uses CUDA-only <cuda/ptx>. Route DSA topk
+        # through torch (topk_func is_torch -> _topk_unfused/torch.topk) and disable
+        # cuda-graph (bring-up; perf cost accepted).
+        "--sglang-disable-cuda-graph "
+        "--sglang-dsa-topk-backend torch "
     )
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         sglang_args += (
@@ -493,6 +498,14 @@ def _train(args: ScriptArgs):
         )
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
+        # ROCm/gfx950: DSv4 sparse-attn indexer metadata defaults to CUDA-only deep_gemm
+        # (metadata.py __post_init__). Route paged-MQA-logits metadata through torch
+        # (deep_gemm_metadata=None) so the rollout engine doesn't import deep_gemm.
+        "SGLANG_FP8_PAGED_MQA_LOGITS_TORCH": "1",
+        # ROCm/gfx950: topk_v2 JIT kernel needs CUDA-only <cuda/ptx>. Disable it so
+        # metadata.py sets topk_metadata=empty (no plan_topk_v2) and the indexer falls
+        # back to topk_transform_512, which has a HIP precompiled-op path.
+        "SGLANG_OPT_USE_TOPK_V2": "0",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
