@@ -25,10 +25,18 @@ logger = logging.getLogger(__name__)
 
 def get_local_gpu_id():
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
+    gpu_id = int(ray.get_gpu_ids()[0])
     if not cvd:
-        return ray.get_gpu_ids()[0]
-    else:
-        return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
+        return gpu_id
+    # ray.get_gpu_ids() returns 0-based ray-logical ids == local ids; prefer the local
+    # interpretation first so a logical id that numerically collides with a physical id in a
+    # non-0-based HIP_VISIBLE_DEVICES (e.g. "1,2") is not mis-mapped via .index() and the
+    # actor crashes with `ValueError: '0' is not in list` (same root cause as
+    # _to_local_gpu_id in sglang_engine.py).
+    visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
+    if 0 <= gpu_id < len(visible):
+        return gpu_id
+    return visible.index(gpu_id)
 
 
 class TrainRayActor(RayActor):
