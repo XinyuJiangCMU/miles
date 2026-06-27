@@ -8,8 +8,8 @@
 #    build-arg:GPU_ARCH=gfx942
 #    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
 
-ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
-FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
+ARG SGLANG_IMAGE_TAG=v0.5.14-rocm700-mi35x-20260627
+FROM rocm/sgl-dev:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
@@ -32,8 +32,8 @@ ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
 ARG RCCL_TESTS_BRANCH=develop
 ARG RCCL_TESTS_PATH=projects/rccl-tests
 
-ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
-ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
+ARG TRANSFORMER_ENGINE_REPO=https://github.com/JessicaJiang-123/TransformerEngine.git
+ARG TRANSFORMER_ENGINE_BRANCH=amd-qwen3-30b-a3b-fp8-dev
 
 # ======================================== Setup ================================================
 WORKDIR /root/
@@ -96,25 +96,16 @@ RUN rm -rf /root/Megatron-LM && \
     git apply /tmp/amd_patch/megatron.patch && \
     pip install -e .
 
-RUN pip uninstall -y sgl_kernel sglang || true
+# Mirror NV Dockerfile: install the sglang-miles PYTHON layer only, keep base's sgl_kernel.so
+# (rocm/sgl-dev:v0.5.14 already ships DSv4 ops). NO uninstall, NO sgl-kernel rebuild — that's what
+# dropped the DSv4 ops (E10). Result: python = sglang-miles (RL changes), sgl_kernel = base.
 RUN cd /sgl-workspace/sglang && \
-    git reset --hard && \
-    git clean -fdx && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \
     else \
       git checkout FETCH_HEAD; \
     fi && \
-    git submodule sync --recursive && \
-    git submodule update --init --recursive && \
-    cd sgl-kernel && \
-    rm -f pyproject.toml && \
-    mv pyproject_rocm.toml pyproject.toml && \
-    AMDGPU_TARGET=${GPU_ARCH} python setup_rocm.py install && \
-    cd .. && \
-    rm -rf python/pyproject.toml && \
-    mv python/pyproject_other.toml python/pyproject.toml && \
     pip install -e "python[all_hip]" --no-deps
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
