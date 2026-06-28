@@ -37,12 +37,12 @@
 - **E12** indexer `No module deep_gemm` → env 集(aiter indexer)。
 - **E13** topk_v2 `<cuda/ptx> not found` → env 集(`TOPK_V2=false`)。
 - **E14** mhc `NameError deep_gemm` → env 集(`DEEPGEMM_HC_PRENORM`+`TILELANG_MHC=false`)。
-- **E15/E16** MoE down_proj tuple / silu `<cuda_fp8.h>` → env 集(`FUSED_COMPRESS` triton);中途的 `FUSED_CLAMP_ACT_MUL=0` 是歧路、已弃。
+- **E15/E16(未解,OPEN)** MoE down_proj 收 tuple(fused_clamp fp8 路径返回 `(x_fp8,x_scale)`,`linear.py` tp-invariant row-linear 读 `.shape` 炸)/ silu `<cuda_fp8.h>` JIT 编不了。**官方 env 集没免**(train19 实测仍撞 E15);`clamp=1`(官方默认)撞 E15、`FUSED_CLAMP_ACT_MUL=0` 改走 silu 又撞 E16,两难。疑训练 rollout 特有(官方推理 test 未覆盖),诊断中。
 - *(旧 base v0.5.10 时期 E2-E9:tile_kernels stub、silu warp patch 等 —— 已被「新 base + env 集」整体取代,不再相关。)*
 
 ## 当前进展 + 待办(重点)
 
-- **rollout**:套用 env 集后验证中(train19);预期一次过 capture + rollout forward。
+- **rollout**:env 集解了 E12/E13/E14(indexer/topk/mhc,train19 实测不再撞);**但 capture 仍撞 E15**(MoE down_proj tuple) —— 官方 env 没覆盖,见上。下一步诊断 E15 真绕法(疑 tp-invariant row-linear 与 fused_clamp fp8 tuple 不兼容)。
 - **actor 侧(核心剩余工作)**:miles 训练走 **Megatron**,其 MHC/quant 经 `deepseek-ai/TileKernels`(CUDA-only,= 旧 E2),**不经 sglang env**,所以这套 rollout env 救不到它。rollout 全绿、训练真跑到 actor forward 时才会暴露;届时需要 ROCm 实现(优先找 aiter/triton 现成的,torch 兜底)。
 - **fp8 训练 step 验收**:rollout + actor 都通后,确认 `fp8_training=True` 的训练 step 真迭代、loss 不 NaN(blockwise e4m3,`NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1`)。
 
