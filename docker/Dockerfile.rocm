@@ -197,6 +197,15 @@ ENV AITER_CONFIG_GEMM_A8W8=/sgl-workspace/aiter/aiter/configs/a8w8_tuned_gemm.cs
 ENV AITER_CONFIG_GEMM_A8W8_BPRESHUFFLE=/sgl-workspace/aiter/aiter/configs/a8w8_bpreshuffle_tuned_gemm.csv
 ENV AITER_CONFIG_GEMM_A8W8_BLOCKSCALE_BPRESHUFFLE=/sgl-workspace/aiter/aiter/configs/a8w8_blockscale_bpreshuffle_tuned_gemm.csv
 ENV AITER_CONFIG_GEMM_A4W4=/sgl-workspace/aiter/aiter/configs/a4w4_blockscale_tuned_gemm.csv
+ENV AITER_CONFIG_FMOE=/sgl-workspace/aiter/aiter/configs/tuned_fmoe.csv
+# E19: DSv4 c4 indexer compressor_v2 emits a tvm c4_v2.cuh kernel whose TensorMatcher wants a 2D
+# kv_input but the caller passes 3D -> "Tensor match failed". Fall back to the v1 triton compressor.
+ENV SGLANG_OPT_USE_COMPRESSOR_V2=false
+# E20: aiter's paged-MQA-logits preshuffle path needs Triton>=3.5 or this flag on ROCm; otherwise it
+# drops to a legacy page_size=1/KVBlockSize=1 path that asserts against DSv4's page_size=256 (and the
+# torch fallback asserts on seq_lens shape too). The AOT gluon kernel keeps the aiter/triton path and
+# supports the real page block.
+ENV AITER_ENABLE_AOT_GLUON_PA_MQA_LOGITS=1
 
 RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
 
