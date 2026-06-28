@@ -162,23 +162,26 @@ ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
 ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
 # Keep GPUs visible to Ray num_gpus=0 coordinators so Megatron device checks do not crash.
 ENV RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
-# DSv4 indexer: route paged-MQA-logits through aiter's triton kernel instead of deep_gemm
-# (CUDA-only, absent on ROCm). Sets deep_gemm_metadata=None in PagedIndexerMetadata AND makes
-# indexer.py use _aiter_fp8_paged_mqa_logits — the only flag covering both, fully avoiding deep_gemm.
-ENV SGLANG_OPT_USE_AITER_INDEXER=1
-# DSv4 topk: SGLANG_OPT_USE_TOPK_V2 defaults True and JIT-compiles a topk kernel whose header
-# includes CUDA-only 'cuda/ptx' (ninja fails on gfx950). =0 makes PagedIndexerMetadata skip the
-# JIT (topk_metadata=torch.empty(0)) and indexer.py take the non-topk-v2 path.
-ENV SGLANG_OPT_USE_TOPK_V2=0
-# DSv4 MHC (multi-hyper-connection): hc_pre/hc_post default to SGLANG_OPT_USE_TILELANG_MHC_PRE/POST=1,
-# which call sglang's mhc_pre -> deep_gemm.tf32_hc_prenorm_gemm (NameError on ROCm, deep_gemm absent).
-# =0 makes hc_pre/post take the _is_hip aiter path (aiter.ops.mhc; SGLANG_OPT_USE_AITER_MHC_* default True).
-ENV SGLANG_OPT_USE_TILELANG_MHC_PRE=0
-ENV SGLANG_OPT_USE_TILELANG_MHC_POST=0
-# DSv4 MoE: on ROCm the fused_clamp_act_mul fp8 path returns (x_fp8, x_scale) tuple, but
-# down_proj's tp-invariant row-linear (linear.py should_use_tp_invariant_row_linear) reads
-# input.shape and chokes on the tuple. =0 falls back to silu_and_mul_clamp (returns a tensor).
-ENV SGLANG_OPT_USE_FUSED_CLAMP_ACT_MUL=0
+# DSv4 sparse-attn indexer + MHC + MoE on ROCm/gfx950: steer every kernel away from CUDA-only
+# deep_gemm / <cuda/ptx> / tilelang / <cuda_fp8.h> toward aiter/triton. This set mirrors sglang's
+# AMD nightly CI — test/registered/amd/test_deepseek_v4_flash_fp8.py COMMON_ENV_VARS, the
+# authoritative "run DSv4-Flash-FP8 on MI35x" list. (USE_AITER / USE_ROCM700A already set above.)
+ENV SGLANG_OPT_DEEPGEMM_HC_PRENORM=false
+ENV SGLANG_OPT_USE_FUSED_COMPRESS=true
+ENV SGLANG_OPT_USE_FUSED_COMPRESS_TRITON=true
+ENV SGLANG_HACK_FLASHMLA_BACKEND=triton
+ENV SGLANG_OPT_FP8_WO_A_GEMM=false
+ENV SGLANG_OPT_USE_JIT_INDEXER_METADATA=false
+ENV SGLANG_OPT_USE_TOPK_V2=false
+ENV SGLANG_OPT_USE_AITER_INDEXER=true
+ENV SGLANG_OPT_USE_TILELANG_INDEXER=false
+ENV SGLANG_OPT_USE_TILELANG_MHC_PRE=false
+ENV SGLANG_OPT_USE_TILELANG_MHC_POST=false
+ENV SGLANG_FP8_PAGED_MQA_LOGITS_TORCH=1
+ENV SGLANG_OPT_USE_MULTI_STREAM_OVERLAP=false
+ENV SGLANG_ROCM_USE_MULTI_STREAM=false
+ENV AITER_BF16_FP8_MOE_BOUND=0
+ENV SGLANG_DSV4_FP4_EXPERTS=false
 
 RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
 

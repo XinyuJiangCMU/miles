@@ -496,16 +496,11 @@ def _train(args: ScriptArgs):
             "--sglang-speculative-eagle-topk 1 "
             "--sglang-speculative-num-draft-tokens 4 "
         )
-    # DSv4 ROCm/gfx950 rollout-engine knobs (steer the sparse-attn indexer + MHC away from
-    # CUDA-only deep_gemm / <cuda/ptx> / tilelang) are set image-wide in docker/Dockerfile.rocm
-    # so they apply to every entrypoint and the rollout engine inherits them:
-    #   SGLANG_OPT_USE_AITER_INDEXER=1      (indexer metadata + compute via aiter, not deep_gemm)
-    #   SGLANG_OPT_USE_TOPK_V2=0            (skip cuda/ptx topk_v2 JIT; topk_metadata=empty)
-    #   SGLANG_OPT_USE_TILELANG_MHC_PRE=0   (mhc_pre/post via aiter.ops.mhc, not deep_gemm)
-    #   SGLANG_OPT_USE_TILELANG_MHC_POST=0
-    # Do NOT re-set them here. (Earlier this set SGLANG_FP8_PAGED_MQA_LOGITS_TORCH=1, which only
-    # nulled the metadata path and was incomplete anyway — indexer.py compute still imported
-    # deep_gemm — and is superseded by the aiter indexer flag.)
+    # DSv4 ROCm/gfx950 rollout-engine knobs (steer sparse-attn indexer / MHC / MoE off CUDA-only
+    # deep_gemm / <cuda/ptx> / tilelang / <cuda_fp8.h> onto aiter/triton) are set image-wide in
+    # docker/Dockerfile.rocm — that full set mirrors sglang's AMD nightly CI
+    # (test/registered/amd/test_deepseek_v4_flash_fp8.py COMMON_ENV_VARS). The rollout engine
+    # inherits them; don't duplicate the rollout knobs here.
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",

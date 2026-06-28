@@ -21,6 +21,25 @@ python scripts/run_deepseek_v4.py full-train \
   --num-nodes 1 --num-gpus-per-node 8
 ```
 
+## 核心结论(TL;DR,2026-06-28)
+
+**DSv4-Flash-FP8 在 ROCm/gfx950 跑通 rollout,本质只两件事,不是十几个独立 bug:**
+
+1. **build 配方**(`docker/Dockerfile.rocm`):`FROM rocm/sgl-dev:v0.5.14`(base 自带 dsv4 op,**关键是别 uninstall+重编 sgl_kernel**)+ 末尾 re-pin `click==8.2.1`(ray 2.44 CLI)+ TE blockwise-fp8 分支。
+2. **一套 rollout env**(Dockerfile ENV,镜像级):把 DSv4 的 sparse-attn indexer / MHC / MoE 从 CUDA-only(deep_gemm / `<cuda/ptx>` / tilelang / `<cuda_fp8.h>`)全切到 **aiter/triton**。**这套 env 直接照搬 sglang AMD nightly CI 的 `test/registered/amd/test_deepseek_v4_flash_fp8.py` 的 `COMMON_ENV_VARS`**(权威全集)。
+
+| env | 绕开的 CUDA-only | 早期逐个撞的 error |
+|---|---|---|
+| `SGLANG_OPT_USE_AITER_INDEXER=true` + `SGLANG_FP8_PAGED_MQA_LOGITS_TORCH=1` | indexer metadata+compute → aiter/torch | E3 / E12 |
+| `SGLANG_OPT_USE_TOPK_V2=false` + `USE_JIT_INDEXER_METADATA=false` | 跳过 `<cuda/ptx>` topk_v2 JIT | E5 / E13 |
+| `SGLANG_OPT_DEEPGEMM_HC_PRENORM=false` + `TILELANG_MHC_PRE/POST=false` | MHC → `aiter.ops.mhc` | E6 / E14 |
+| `SGLANG_OPT_USE_FUSED_COMPRESS=true` + `_TRITON=true` | MoE 压缩/激活 → triton | (E15/E16 由此避开) |
+| `HACK_FLASHMLA_BACKEND=triton` / `USE_TILELANG_INDEXER=false` / `MULTI_STREAM=false×2` / `AITER_BF16_FP8_MOE_BOUND=0` / `FP8_WO_A_GEMM=false` | 其余 ROCm 路径 | — |
+
+**教训:** 早期 E2-E16 逐个撞,是因为没先看 AMD test 的 `COMMON_ENV_VARS` —— 照搬这套 env 即可,不必逐个试。我中途的 `SGLANG_OPT_USE_FUSED_CLAMP_ACT_MUL=0`(E15/E16)是**歧路**(官方靠 `FUSED_COMPRESS` 走 triton,不需要它),已从 Dockerfile 移除。
+
+> 下面 E2-E16 详细探路记录**保留**(每个 error 的根因/调用栈/源码行),作 PR 过程证据;但**最终方案以本结论 + Dockerfile ENV(= AMD test COMMON_ENV_VARS)为准**。actor 侧(miles Megatron MHC/quant via TileKernels,E2)走自己路径、不经 sglang env,待 rollout 全绿后暴露。
+
 ## 流水线进展
 
 **当前(新 base v0.5.14)** rollout 链:E10✅(dsv4 op,base 自带)→E11✅(click==8.2.1)→E12✅(aiter indexer)→E13✅(topk_v2=0)→E14✅(aiter mhc)→**E15 MoE down_proj 收 tuple ❌(诊断中)**→ actor mhc/quant(E2,未到达)。
