@@ -186,6 +186,17 @@ ENV SGLANG_OPT_USE_MULTI_STREAM_OVERLAP=false
 ENV SGLANG_ROCM_USE_MULTI_STREAM=false
 ENV AITER_BF16_FP8_MOE_BOUND=0
 ENV SGLANG_DSV4_FP4_EXPERTS=false
+# E18: aiter get_config_file() globs model_configs/*.csv then merge-writes /tmp/aiter_configs under
+# a FileBaton mp_lock; colocate's 8+ engine procs deadlock racing that baton (holder blocks in
+# do_wait, never releases). update_config_files() starts with `if len(path_list)<=1: return`, so
+# pinning each GEMM config to a single default file takes the no-merge path (missing shapes just
+# fall back to default kernels). Not online tune (AITER_ONLINE_TUNE defaults 0).
+ENV AITER_CONFIG_GEMM_A8W8_BLOCKSCALE=/sgl-workspace/aiter/aiter/configs/a8w8_blockscale_tuned_gemm.csv
+ENV AITER_CONFIG_GEMM_BF16=/sgl-workspace/aiter/aiter/configs/bf16_tuned_gemm.csv
+ENV AITER_CONFIG_GEMM_A8W8=/sgl-workspace/aiter/aiter/configs/a8w8_tuned_gemm.csv
+ENV AITER_CONFIG_GEMM_A8W8_BPRESHUFFLE=/sgl-workspace/aiter/aiter/configs/a8w8_bpreshuffle_tuned_gemm.csv
+ENV AITER_CONFIG_GEMM_A8W8_BLOCKSCALE_BPRESHUFFLE=/sgl-workspace/aiter/aiter/configs/a8w8_blockscale_bpreshuffle_tuned_gemm.csv
+ENV AITER_CONFIG_GEMM_A4W4=/sgl-workspace/aiter/aiter/configs/a4w4_blockscale_tuned_gemm.csv
 
 RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
 
