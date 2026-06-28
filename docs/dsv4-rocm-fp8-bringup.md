@@ -51,3 +51,11 @@
 
 - checkpoint `models/DeepSeek-V4-Flash-FP8-4layer`(27G)、bf16 `...-bf16`(52G)、torch_dist `..._torch_dist`(52G)。
 - 当前日志 `train19.log`(最新一轮)。
+
+## 突破(2026-06-28):rollout engine 起来了 —— `fired up and ready to roll`
+
+**E15 修法验证 ✅** sglang-miles `linear.py:1575` 改 `if not isinstance(input_parallel, tuple) and should_use_tp_invariant_row_linear(...)`(fp8 pre-quant tuple 时跳过 tp_invariant,落到 `quant_method.apply` = main/NV 行为)。capture 推进过 down_proj、不再撞 tuple.shape。**正式落地:Xinyu fork sglang-miles 改这 1 行 + Dockerfile sglang 段 fetch 该 fork branch**(待办,git 写 Xinyu 来)。
+
+**E17(新,已绕) cuda graph capture 在 ROCm colocate hang** —— GPU 0%、log 停在 `Capture cuda graph begin ... bs=256`。aiter/triton kernel 在 cuda graph capture 模式不兼容;miles colocate 已默认禁 piecewise cuda graph(NVLS OOM 注释),但**完整 cuda graph 还开着**。绕:rollout `disable_cuda_graph=True`。已落 `miles/backends/sglang_utils/sglang_engine.py::_init_normal`(`is_hip()` 时设,NV 不影响)。
+
+**结果:E10-E17 全过,`The server is fired up and ready to roll!`** —— rollout engine 起来了。下一步:rollout forward 生成 → actor train step(预期撞 actor 侧 = 旧 E2,miles Megatron 经 TileKernels 的 mhc/quant,CUDA-only)。

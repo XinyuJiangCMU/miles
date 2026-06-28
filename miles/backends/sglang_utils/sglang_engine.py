@@ -217,6 +217,14 @@ class SGLangEngine(RayActor):
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
+        # ROCm colocate: full cuda graph capture hangs for DSv4-FP8 (aiter/triton kernels in
+        # capture mode -- GPU idle, log frozen at "Capture cuda graph begin ... bs=256"). miles
+        # already disables piecewise cuda graph in colocate; disable the full one too on ROCm.
+        # NV is unaffected.
+        from sglang.srt.utils import is_hip
+
+        if is_hip():
+            server_args_dict["disable_cuda_graph"] = True
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
