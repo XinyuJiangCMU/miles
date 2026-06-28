@@ -119,6 +119,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.model_local_dir = self.model_dir
         if self.model_name in _PRO_MODEL_NAMES:
             self.enable_r3 = False
+        # ROCm: sglang's aiter fused MoE doesn't export per-token routed_experts in the rollout
+        # meta_info, so R3 (rollout routing replay) has no data to replay and train_actor raises
+        # "rollout_routed_experts is required". Disable R3 on ROCm (NV unaffected).
+        if self.enable_r3:
+            try:
+                from sglang.srt.utils import is_hip
+
+                if is_hip():
+                    self.enable_r3 = False
+            except Exception:
+                pass
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
         self.colocate = self.rollout_num_nodes == 0
@@ -522,6 +533,7 @@ def _train(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
         "--sglang-mem-fraction-static 0.7 "
+        "--sglang-watchdog-timeout 1800 "  # ROCm: aiter online gemm tune is slow under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format bshd "
