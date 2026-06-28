@@ -17,7 +17,12 @@ class _BFloat16LinearFP32Func(torch.autograd.Function):
         ctx.weight_dtype = weight.dtype
 
         x_2d = x_bf16.reshape(-1, x_bf16.shape[-1])
-        out = torch.mm(x_2d, weight_bf16.t(), out_dtype=torch.float32)
+        if torch.version.hip is not None:
+            # ROCm hipblas doesn't support bf16-input / fp32-output gemm (torch.mm out_dtype).
+            # Plain fp32 matmul is numerically >= cublas's bf16-in/fp32-accumulate and is supported.
+            out = torch.mm(x_2d.float(), weight_bf16.t().float())
+        else:
+            out = torch.mm(x_2d, weight_bf16.t(), out_dtype=torch.float32)
         return out.view(*x.shape[:-1], weight_bf16.shape[0])
 
     @staticmethod

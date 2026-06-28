@@ -585,6 +585,17 @@ def _train(args: ScriptArgs):
         # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
         fp32_scales = "0" if _is_blackwell(args) else "1"
         misc_args += f"""--train-env-vars '{{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"{fp32_scales}"}}' """
+        # ROCm: TE's blockwise grouped FP8 path (MoE grouped linear) doesn't support
+        # fuse_wgrad_accumulation -> NotImplementedError. Disable gradient_accumulation_fusion so
+        # wgrad is returned as a plain gradient and Megatron's DDP post-hook accumulates it into the
+        # fp32 main_grad (numerically equivalent for bring-up). NV TE supports the fusion, keep it.
+        try:
+            from sglang.srt.utils import is_hip
+
+            if is_hip():
+                misc_args += "--no-gradient-accumulation-fusion "
+        except Exception:
+            pass
 
     train_args = (
         f"{ckpt_args} "

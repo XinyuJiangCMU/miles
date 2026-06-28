@@ -32,7 +32,7 @@
 | `AITER_CONFIG_GEMM_*`(6 个) + `AITER_CONFIG_FMOE` 各指 default 单文件 | 避 aiter config-merge baton 死锁(见 E18) | E18 |
 | `HACK_FLASHMLA_BACKEND=triton` / `USE_TILELANG_INDEXER=false` / `MULTI_STREAM=false`×2 / `AITER_BF16_FP8_MOE_BOUND=0` / `FP8_WO_A_GEMM=false` / `DSV4_FP4_EXPERTS=false` | 其余 ROCm 路径 | CI |
 
-## blocker 台账(E10-E23 rollout 全通 + E2 actor)
+## blocker 台账(E10-E23 rollout 全通 + E2/E24/E25/E26 actor)
 
 完全解决/绕过的一行,关键的多写。
 
@@ -49,15 +49,17 @@
 - **E20** ✅(已绕,torch fn 定案) DSv4 indexer paged-MQA-logits 在 ROCm 三条路:① aiter AOT gluon(`AITER_ENABLE_AOT_GLUON_PA_MQA_LOGITS=1`)需 `triton>=3.6`,容器是 `pytorch-triton-rocm 3.4`(ROCm7.0 配套)→ 编译 `ValueError: CDNA_VERSION is not in list`(E21),死路;② aiter legacy → `assert KVBlockSize==1` 与 DSv4 page 不符;③ **torch fn `fp8_paged_mqa_logits_torch`**(`AITER_INDEXER=false`+`FP8_PAGED_MQA_LOGITS_TORCH=1`),纯 torch、不依赖 triton 版本。**定案走 ③**(agent 调研:升 triton≥3.6 要连 torch 升、炸整镜像;v2 c4_v2 是 tvm 语义 ABI 不匹配,均比 torch fn 重)。torch fn path 配 sglang fork 3 处修(都在 fork branch sglang-miles-dsv4-rocm):E20=torch fn 开头 squeeze seq_lens(caller forward_c4_indexer:551 给 deep_gemm path unsqueeze 成 2D);E22=indexer.py:586 `getattr(core_metadata,"c4_sparse_raw_indices",None)`(DSV4AttnMetadata 无此 field,非 capture/hisparse 本该 None);E23=`fused_compress_triton._c128_decode_kernel` 的 kv_input/score_input 两处 `tl.load` 指针补 `(slot_offs*0)[:,None]` 显式广播(triton 3.4 不自动把 (1,D) 广播到 mask 的 (BLOCK_S,D);与 page_size 无关,128 是 c128 压缩比)。train34 实测 **prefill+decode 全过、rollout forward 整链通**。
 - **E2** ✅(已解,torch mhc/quant) rollout 全通后 Megatron actor init(`MegatronTrainRayActor.init`→`spec_utils.py:55 import_module`)撞 `No module named 'tile_kernels'`→spec=None→`specialize for NoneType`。DSv4 plugin(`miles_plugins/models/deepseek_v4/ops/qat.py`/`hyper_connection.py`)硬 import CUDA/SM90-100-only 的 `tile_kernels`(gfx950 装不了)。修:纯 torch autograd 重写 —— `qat.py` 的 `per_token_cast_back`(fp8 blockwise dequant)+ `hyper_connection.py` 的 7 个 mhc 函数(mhc_pre_norm_fn/split_mixes/apply_mix/head_compute_mix/post/pre_big_fuse/sinkhorn);数学从 sglang `srt/layers/mhc.py` 的 TileLang 参考反推。**全 torch** 因 `aiter.ops.mhc` 只 forward 无 backward、actor 训练需反传。自测 forward+backward finite、mhc_post vs 显式 loop diff 4.8e-7、sinkhorn doubly-stochastic。train35 实测 actor init 过、update_weights(11s)、rollout generate 都通。**提速待办(用户要求,torch mhc 慢)**:mhc forward 换 aiter(`mhc_pre`/`mhc_post`/`mhc_pre_big_fuse`)+ backward 手写 autograd.Function(aiter 无 bwd kernel);sanity 通过后做。
 - **E24** ✅(已绕,关 R3) generate 完→train step 撞 `ValueError: rollout_routed_experts is required in rollout_data for replay`(`actor.py train_actor`→`replay_data.py:53`)。`--use-rollout-routing-replay`(R3,`run_deepseek_v4.py enable_r3`)需 rollout 回传 MoE routed_experts(`sglang_rollout.py:178` 请求 `return_routed_experts`→收 `meta_info["routed_experts"]`),但 ROCm sglang aiter fused MoE 不导出 routing→缺。R3 是 on-policy 优化、sanity 不必需。修:`run_deepseek_v4.py __post_init__` 加 `is_hip()` guard 关 `enable_r3`(NV 不影响)。要严格 on-policy 需让 aiter MoE 导出 routed_experts(单独 feature,后续)。
+- **E25** ✅(已绕) compute_log_prob 撞 `NotImplementedError: fuse_wgrad_accumulation (gradient_accumulation_fusion) is not yet supported in the ROCm blockwise grouped FP8 path`(TE `grouped_linear_blockwise.py`,MoE grouped linear)。修(message 自带解):`run_deepseek_v4.py` fp8_training 段加 `is_hip()` guard `--no-gradient-accumulation-fusion`——wgrad 返回 plain gradient,Megatron DDP post-hook 累加进 fp32 main_grad(bring-up 数值等价;NV 保留 fusion)。train37 实测 compute_log_prob 过。
+- **E26** ✅(已绕) train step compressor wkv `linear_bf16_fp32` 的 `torch.mm(bf16,bf16,out_dtype=fp32)` ROCm hipblas 不支持(`gemm input bf16 output float not supported for ROCm`)。修:`precision_aligned_ops.py _BFloat16LinearFP32Func.forward` 加 `torch.version.hip` guard 用 fp32 matmul(精度 ≥ cublas bf16-in/fp32-accumulate;backward 本就 fp32;NV 保留 bf16 快路径)。train38 实测 rollout/generate 整链过。
 
 ## 当前状态 + 待办
 
-- **rollout ✅ 全通**(E10-E23)+ **actor init ✅ 过**(E2 torch mhc/quant)+ **update_weights ✅**:train35 实测 actor init、update_weights(11s)、rollout generate 都通;generate 完撞 E24(routing replay)、已关 R3。
-- **当前 train36**(关 R3 + E2 torch mhc)验证 train step:走完 generate→train step,看 loss 是否真迭代不 NaN(端到端验收)。
+- **rollout ✅ 全通**(E10-E23)+ **actor init ✅**(E2)+ **update_weights ✅** + **R3 关**(E24)+ **wgrad fusion 关**(E25)+ **bf16→fp32 gemm fp32 兜底**(E26):train36 实测 train step 内核能跑(rank Timer train end 20.1s)、train38 generate(256/256)完成。
+- **当前 train38** 验证完整 generate→compute_log_prob→train step:看 loss 是否真迭代不 NaN(端到端验收)。
 - **验收**:`fp8_training=True` 训练 step 真迭代、loss 不 NaN(blockwise e4m3,`NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1`)。
-- **待办**:① train step 通过后做 mhc 提速(torch→aiter forward + 手写 backward,用户要求);② R3 的 ROCm 支持(aiter MoE 导出 routing)若要严格 on-policy。
+- **待办**:① 验收通过后 mhc 提速(torch→aiter forward + 手写 backward;见全地图:MHC backward 是 actor 侧唯一要自己写的,其余 TE/Primus 已覆盖);② R3 的 ROCm 支持(aiter MoE 导出 routing)若要严格 on-policy。
 
 ## 产物(host mount,容器重启不丢)
 
 - checkpoint `models/DeepSeek-V4-Flash-FP8-4layer`(27G)、bf16 `...-bf16`(52G)、torch_dist `..._torch_dist`(52G)。
-- 运行日志 `train{N}.log`(最新 train36,rollout+actor init 通、train step 验证中)。
+- 运行日志 `train{N}.log`(最新 train38,generate 完成、compute_log_prob+train step 验证中)。
