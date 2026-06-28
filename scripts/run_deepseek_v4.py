@@ -119,9 +119,16 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.model_local_dir = self.model_dir
         if self.model_name in _PRO_MODEL_NAMES:
             self.enable_r3 = False
-        # ROCm: sglang's aiter fused MoE doesn't export per-token routed_experts in the rollout
-        # meta_info, so R3 (rollout routing replay) has no data to replay and train_actor raises
-        # "rollout_routed_experts is required". Disable R3 on ROCm (NV unaffected).
+        # R3 (rollout routing replay) does not work on ROCm: although the topk-stage capture
+        # hook (select_experts -> _post_process_topk_ids) is platform-independent and the
+        # RoutedExpertsCapturer is created regardless of device, the PRODUCER that feeds it is
+        # effectively CUDA-only for the dsv4 aiter/ROCm topk path (same pattern that
+        # model_runner.init_indexer_capturer guards explicitly: "Producer wiring is CUDA-only
+        # ... other backends create a capturer but never feed it"). So enable_return_routed_experts
+        # yields empty routing, meta_info lacks "routed_experts", and train_actor's replay raises
+        # "rollout_routed_experts is required". Verified: train44 forced R3 on under ROCm and still
+        # crashed at the first train step. Disable R3 on ROCm (NV unaffected); enabling it needs
+        # the aiter topk producer wired to feed the capturer (deep sglang/aiter work, out of scope).
         if self.enable_r3:
             try:
                 from sglang.srt.utils import is_hip
