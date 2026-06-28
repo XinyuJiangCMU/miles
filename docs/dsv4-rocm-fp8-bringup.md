@@ -52,14 +52,21 @@
 - **E25** ✅(已绕) compute_log_prob 撞 `NotImplementedError: fuse_wgrad_accumulation (gradient_accumulation_fusion) is not yet supported in the ROCm blockwise grouped FP8 path`(TE `grouped_linear_blockwise.py`,MoE grouped linear)。修(message 自带解):`run_deepseek_v4.py` fp8_training 段加 `is_hip()` guard `--no-gradient-accumulation-fusion`——wgrad 返回 plain gradient,Megatron DDP post-hook 累加进 fp32 main_grad(bring-up 数值等价;NV 保留 fusion)。train37 实测 compute_log_prob 过。
 - **E26** ✅(已绕) train step compressor wkv `linear_bf16_fp32` 的 `torch.mm(bf16,bf16,out_dtype=fp32)` ROCm hipblas 不支持(`gemm input bf16 output float not supported for ROCm`)。修:`precision_aligned_ops.py _BFloat16LinearFP32Func.forward` 加 `torch.version.hip` guard 用 fp32 matmul(精度 ≥ cublas bf16-in/fp32-accumulate;backward 本就 fp32;NV 保留 bf16 快路径)。train38 实测 rollout/generate 整链过。
 
-## 当前状态 + 待办
+## 当前状态:✅ 端到端 fp8 训练 sanity 验收通过(train38)
 
-- **rollout ✅ 全通**(E10-E23)+ **actor init ✅**(E2)+ **update_weights ✅** + **R3 关**(E24)+ **wgrad fusion 关**(E25)+ **bf16→fp32 gemm fp32 兜底**(E26):train36 实测 train step 内核能跑(rank Timer train end 20.1s)、train38 generate(256/256)完成。
-- **当前 train38** 验证完整 generate→compute_log_prob→train step:看 loss 是否真迭代不 NaN(端到端验收)。
-- **验收**:`fp8_training=True` 训练 step 真迭代、loss 不 NaN(blockwise e4m3,`NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1`)。
-- **待办**:① 验收通过后 mhc 提速(torch→aiter forward + 手写 backward;见全地图:MHC backward 是 actor 侧唯一要自己写的,其余 TE/Primus 已覆盖);② R3 的 ROCm 支持(aiter MoE 导出 routing)若要严格 on-policy。
+train38 完整跑通一步 RL 训练并进入第 2 步循环,**训练 step 真迭代、不报错、不 NaN**:
+- **generate** ✅ 256/256(rollout forward 全链,E10-E23)
+- **compute_log_prob** ✅ `Timer log_probs end 47.5s`,`rollout/log_probs=-1.71`、`rollout_log_probs=-1.59`(有限、不 NaN;E25 wgrad-fusion 关生效)
+- **train step** ✅ `Timer train end 163.7s`,`actor_train_tflops=15.47`、`tok_per_s=9359`(真在算;E2 torch mhc + E26 fp32 gemm 生效)
+- **update_weights** ✅ 第 2 次 10.9s → **第 2 个 rollout step 已开始**(pipeline 真迭代起来)
+
+全程 `check_for_nan_in_loss_and_grad=True` 没 raise。fp8 blockwise e4m3 + `NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1`。
+
+**待办(性能/严格性,非 sanity 必需)**:
+- ① **mhc 提速**:actor_train 一步 163.7s 大头在 torch mhc(用户已指出慢)。提速 = mhc forward 换 aiter(`mhc_pre`/`mhc_post`/`mhc_pre_big_fuse`)+ backward 手写 autograd.Function;prenorm-GEMM/norm 借 Primus-Turbo,mixing/residual/sinkhorn 主体手写(见全地图:MHC backward 是 actor 侧唯一要自己写的)。
+- ② **R3 严格 on-policy**:ROCm 让 aiter fused MoE 导出 routed_experts 后可重开 routing replay。
 
 ## 产物(host mount,容器重启不丢)
 
 - checkpoint `models/DeepSeek-V4-Flash-FP8-4layer`(27G)、bf16 `...-bf16`(52G)、torch_dist `..._torch_dist`(52G)。
-- 运行日志 `train{N}.log`(最新 train38,generate 完成、compute_log_prob+train step 验证中)。
+- 运行日志 `train{N}.log`(最新 train38 = 端到端验收通过那次;中间过程 log 已清)。
