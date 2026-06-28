@@ -177,7 +177,11 @@ ENV SGLANG_HACK_FLASHMLA_BACKEND=triton
 ENV SGLANG_OPT_FP8_WO_A_GEMM=false
 ENV SGLANG_OPT_USE_JIT_INDEXER_METADATA=false
 ENV SGLANG_OPT_USE_TOPK_V2=false
-ENV SGLANG_OPT_USE_AITER_INDEXER=true
+# E20: aiter paged-MQA-logits on ROCm needs triton>=3.6 (AOT gluon; container has 3.4, compiles to
+# `CDNA_VERSION not in list`) and the legacy path asserts KVBlockSize==1 vs DSv4 page_size. So route
+# the indexer through the torch fp8_paged_mqa_logits_torch fn (with FP8_PAGED_MQA_LOGITS_TORCH=1
+# below); the sglang fork carries the 3 fixes that make that path run end-to-end.
+ENV SGLANG_OPT_USE_AITER_INDEXER=false
 ENV SGLANG_OPT_USE_TILELANG_INDEXER=false
 ENV SGLANG_OPT_USE_TILELANG_MHC_PRE=false
 ENV SGLANG_OPT_USE_TILELANG_MHC_POST=false
@@ -201,11 +205,6 @@ ENV AITER_CONFIG_FMOE=/sgl-workspace/aiter/aiter/configs/tuned_fmoe.csv
 # E19: DSv4 c4 indexer compressor_v2 emits a tvm c4_v2.cuh kernel whose TensorMatcher wants a 2D
 # kv_input but the caller passes 3D -> "Tensor match failed". Fall back to the v1 triton compressor.
 ENV SGLANG_OPT_USE_COMPRESSOR_V2=false
-# E20: aiter's paged-MQA-logits preshuffle path needs Triton>=3.5 or this flag on ROCm; otherwise it
-# drops to a legacy page_size=1/KVBlockSize=1 path that asserts against DSv4's page_size=256 (and the
-# torch fallback asserts on seq_lens shape too). The AOT gluon kernel keeps the aiter/triton path and
-# supports the real page block.
-ENV AITER_ENABLE_AOT_GLUON_PA_MQA_LOGITS=1
 
 RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
 
