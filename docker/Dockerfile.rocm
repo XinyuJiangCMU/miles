@@ -14,7 +14,11 @@ FROM rocm/sgl-dev:${SGLANG_IMAGE_TAG} AS sglang
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
 # ======================================== Arguments ============================================
-ARG SGLANG_BRANCH=sglang-miles
+# sglang from Xinyu's fork = sglang-miles + the DSv4 ROCm fp8-tuple fix (E15): in
+# RowParallelLinear.forward, skip true_on_policy tp_invariant when input is the aiter fused_clamp
+# fp8 pre-quant tuple (which has no .shape) — matches sglang main / NV behaviour.
+ARG SGLANG_REPO=https://github.com/XinyuJiangCMU/sglang.git
+ARG SGLANG_BRANCH=sglang-miles-dsv4-rocm
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
@@ -96,12 +100,12 @@ RUN rm -rf /root/Megatron-LM && \
     git apply /tmp/amd_patch/megatron.patch && \
     pip install -e .
 
-# Mirror NV Dockerfile: install the sglang-miles PYTHON layer only, keep base's sgl_kernel.so
-# (rocm/sgl-dev:v0.5.14 already ships DSv4 ops). NO uninstall, NO sgl-kernel rebuild — that's what
-# dropped the DSv4 ops (E10). Result: python = sglang-miles (RL changes), sgl_kernel = base.
+# Install the sglang PYTHON layer only from Xinyu's fork branch (sglang-miles + E15 fix), keep
+# base's sgl_kernel.so (rocm/sgl-dev:v0.5.14 already ships DSv4 ops). NO uninstall, NO sgl-kernel
+# rebuild — that dropped the DSv4 ops (E10). Result: python = fork, sgl_kernel = base.
 RUN cd /sgl-workspace/sglang && \
     git reset --hard && \
-    git fetch origin ${SGLANG_BRANCH} && \
+    git fetch ${SGLANG_REPO} ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \
     else \
