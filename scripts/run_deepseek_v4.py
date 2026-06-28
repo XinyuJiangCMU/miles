@@ -496,16 +496,18 @@ def _train(args: ScriptArgs):
             "--sglang-speculative-eagle-topk 1 "
             "--sglang-speculative-num-draft-tokens 4 "
         )
+    # DSv4 ROCm/gfx950 rollout-engine knobs (steer the sparse-attn indexer + MHC away from
+    # CUDA-only deep_gemm / <cuda/ptx> / tilelang) are set image-wide in docker/Dockerfile.rocm
+    # so they apply to every entrypoint and the rollout engine inherits them:
+    #   SGLANG_OPT_USE_AITER_INDEXER=1      (indexer metadata + compute via aiter, not deep_gemm)
+    #   SGLANG_OPT_USE_TOPK_V2=0            (skip cuda/ptx topk_v2 JIT; topk_metadata=empty)
+    #   SGLANG_OPT_USE_TILELANG_MHC_PRE=0   (mhc_pre/post via aiter.ops.mhc, not deep_gemm)
+    #   SGLANG_OPT_USE_TILELANG_MHC_POST=0
+    # Do NOT re-set them here. (Earlier this set SGLANG_FP8_PAGED_MQA_LOGITS_TORCH=1, which only
+    # nulled the metadata path and was incomplete anyway — indexer.py compute still imported
+    # deep_gemm — and is superseded by the aiter indexer flag.)
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
-        # ROCm/gfx950: DSv4 sparse-attn indexer metadata defaults to CUDA-only deep_gemm
-        # (metadata.py __post_init__). Route paged-MQA-logits metadata through torch
-        # (deep_gemm_metadata=None) so the rollout engine doesn't import deep_gemm.
-        "SGLANG_FP8_PAGED_MQA_LOGITS_TORCH": "1",
-        # ROCm/gfx950: topk_v2 JIT kernel needs CUDA-only <cuda/ptx>. Disable it so
-        # metadata.py sets topk_metadata=empty (no plan_topk_v2) and the indexer falls
-        # back to topk_transform_512, which has a HIP precompiled-op path.
-        "SGLANG_OPT_USE_TOPK_V2": "0",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",

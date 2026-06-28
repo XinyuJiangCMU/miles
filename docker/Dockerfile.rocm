@@ -166,6 +166,15 @@ ENV RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 # (CUDA-only, absent on ROCm). Sets deep_gemm_metadata=None in PagedIndexerMetadata AND makes
 # indexer.py use _aiter_fp8_paged_mqa_logits — the only flag covering both, fully avoiding deep_gemm.
 ENV SGLANG_OPT_USE_AITER_INDEXER=1
+# DSv4 topk: SGLANG_OPT_USE_TOPK_V2 defaults True and JIT-compiles a topk kernel whose header
+# includes CUDA-only 'cuda/ptx' (ninja fails on gfx950). =0 makes PagedIndexerMetadata skip the
+# JIT (topk_metadata=torch.empty(0)) and indexer.py take the non-topk-v2 path.
+ENV SGLANG_OPT_USE_TOPK_V2=0
+# DSv4 MHC (multi-hyper-connection): hc_pre/hc_post default to SGLANG_OPT_USE_TILELANG_MHC_PRE/POST=1,
+# which call sglang's mhc_pre -> deep_gemm.tf32_hc_prenorm_gemm (NameError on ROCm, deep_gemm absent).
+# =0 makes hc_pre/post take the _is_hip aiter path (aiter.ops.mhc; SGLANG_OPT_USE_AITER_MHC_* default True).
+ENV SGLANG_OPT_USE_TILELANG_MHC_PRE=0
+ENV SGLANG_OPT_USE_TILELANG_MHC_POST=0
 
 RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
 
