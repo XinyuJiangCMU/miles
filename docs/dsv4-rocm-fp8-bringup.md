@@ -8,7 +8,7 @@
 |---|---|
 | 镜像 | base `rocm/sgl-dev:v0.5.14`,容器 `dsv4-fp8-v14`(8×MI355X) |
 | miles | 容器内 `radixark/main`;改动在 `XinyuJiangCMU/miles@wip/dsv4-rocm-tile-kernels-import-guard` |
-| sglang | fork `XinyuJiangCMU/sglang@sglang-miles-dsv4-rocm`(PR #24);Dockerfile fetch 该 branch |
+| sglang | fork `XinyuJiangCMU/sglang@sglang-miles-dsv4-rocm`;Dockerfile fetch 该 branch |
 | TE | `JessicaJiang-123/TransformerEngine@amd-qwen3-30b-a3b-fp8-dev`(blockwise fp8) |
 | 模型 | `Pinaster/DeepSeek-V4-Flash-FP8-4layer` |
 
@@ -41,7 +41,7 @@
 - **E12** ✅ indexer `No module deep_gemm`(metadata.py PagedIndexerMetadata,CUDA-only)→ `FP8_PAGED_MQA_LOGITS_TORCH=1` 让 deep_gemm_metadata=None。(最初用 `AITER_INDEXER=true` 走 aiter,后因 E20 改 `AITER_INDEXER=false` 走 torch fn。)
 - **E13** ✅ topk_v2 `<cuda/ptx> not found` → `USE_TOPK_V2=false`。
 - **E14** ✅ mhc `NameError deep_gemm` → `DEEPGEMM_HC_PRENORM=false`+`TILELANG_MHC=false` → aiter.ops.mhc。
-- **E15** ✅(已解,fork+PR) MoE down_proj 收 fused_clamp fp8 tuple `(x_fp8,x_scale)`;sglang-miles 的 true_on_policy(sgl#26359)给 RowParallelLinear 加了 `should_use_tp_invariant_row_linear(input_parallel.shape[-1])`,在 tuple 上读 `.shape` 炸(sglang main 无此模块)。根因:`matmul_tp_inv` 仅 bf16/fp16/fp32,fp8 row-linear 必走 `quant_method.apply`(`Fp8LinearMethod` 本就拆 tuple)。修:`if not isinstance(self.quant_method, Fp8LinearMethod) and should_use_tp_invariant_row_linear(...)`(读 .shape 前短路)。**fork+pin(非 patch):** [`XinyuJiangCMU/sglang@sglang-miles-dsv4-rocm`](https://github.com/XinyuJiangCMU/sglang/tree/sglang-miles-dsv4-rocm),PR(branch sglang-miles-dsv4-rocm)(commit 链:tuple-skip → Fp8LinearMethod gate → torch fn path 3 修);Dockerfile fetch 该 branch。
+- **E15** ✅(已解,fork+PR) MoE down_proj 收 fused_clamp fp8 tuple `(x_fp8,x_scale)`;sglang-miles 的 true_on_policy(sglang upstream PR 26359)给 RowParallelLinear 加了 `should_use_tp_invariant_row_linear(input_parallel.shape[-1])`,在 tuple 上读 `.shape` 炸(sglang main 无此模块)。根因:`matmul_tp_inv` 仅 bf16/fp16/fp32,fp8 row-linear 必走 `quant_method.apply`(`Fp8LinearMethod` 本就拆 tuple)。修:`if not isinstance(self.quant_method, Fp8LinearMethod) and should_use_tp_invariant_row_linear(...)`(读 .shape 前短路)。**fork+pin(非 patch):** [`XinyuJiangCMU/sglang@sglang-miles-dsv4-rocm`](https://github.com/XinyuJiangCMU/sglang/tree/sglang-miles-dsv4-rocm),PR(branch sglang-miles-dsv4-rocm)(commit 链:tuple-skip → Fp8LinearMethod gate → torch fn path 3 修);Dockerfile fetch 该 branch。
 - **E16** ✅(已绕) silu `<cuda_fp8.h>` JIT(无 ROCm guard) —— E15 的 Fp8 gate 路径走 `FUSED_COMPRESS`(clamp=1)、不再走 `silu_and_mul_clamp`,自然避开。
 - **E17** ✅(已绕) cuda graph capture 在 ROCm colocate hang(GPU 0%、停在 `Capture cuda graph begin bs=256`);aiter/triton kernel 不兼容 cuda graph capture。绕:`miles/utils/arguments.py` colocate 块 `if is_hip() and not args.sglang_disable_cuda_graph: args.sglang_disable_cuda_graph = True`(经 `--sglang-*`→ServerArgs 自动映射,覆盖 normal/external、限 colocate+ROCm、NV 不影响)。
 - **E18** ✅(已解) aiter `get_config_file`(jit/core.py) glob `model_configs/*.csv` 后 `update_config_files` merge 写 `/tmp/aiter_configs`,走 FileBaton mp_lock;colocate 8+ engine 进程抢同一 baton 死锁(持有者卡 do_wait 不 release、全员 wait;清 lock/加大 watchdog 都治标)。**非 online tune**(AITER_ONLINE_TUNE 默认 0)。根因短路:`update_config_files` 开头 `if len(path_list)<=1: return` —— `AITER_CONFIG_GEMM_*`(6 个)+`AITER_CONFIG_FMOE` 各指 default 单文件,走单路径跳过 merge;缺的 shape 自动用 default kernel。(train26 实测 gemm baton 绕过、train28 实测 fmoe baton 绕过。)
