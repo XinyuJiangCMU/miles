@@ -175,6 +175,10 @@ ENV SGLANG_OPT_USE_TOPK_V2=0
 # =0 makes hc_pre/post take the _is_hip aiter path (aiter.ops.mhc; SGLANG_OPT_USE_AITER_MHC_* default True).
 ENV SGLANG_OPT_USE_TILELANG_MHC_PRE=0
 ENV SGLANG_OPT_USE_TILELANG_MHC_POST=0
+# DSv4 MoE: on ROCm the fused_clamp_act_mul fp8 path returns (x_fp8, x_scale) tuple, but
+# down_proj's tp-invariant row-linear (linear.py should_use_tp_invariant_row_linear) reads
+# input.shape and chokes on the tuple. =0 falls back to silu_and_mul_clamp (returns a tensor).
+ENV SGLANG_OPT_USE_FUSED_CLAMP_ACT_MUL=0
 
 RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
 

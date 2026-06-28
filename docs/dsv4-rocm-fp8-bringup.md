@@ -154,3 +154,7 @@ python scripts/run_deepseek_v4.py full-train \
 **E15(新,诊断中)** cuda graph capture forward 撞 `AttributeError: 'tuple' object has no attribute 'shape'`:`deepseek_v2.py:397 down_proj → linear.py:1575 should_use_tp_invariant_row_linear(input_parallel.shape[-1])`,input_parallel 是 tuple 而非 tensor。非 cuda/deep_gemm 类,疑 MoE activation(gate_up→act→down)某 ROCm 路径返回 tuple(疑似 fused clamp/act,对应 wip E7)。
 
 **配置统一(单一真相源)**:DSv4 ROCm rollout 的一串 env(`SGLANG_OPT_USE_AITER_INDEXER=1` / `SGLANG_OPT_USE_TOPK_V2=0` / `SGLANG_OPT_USE_TILELANG_MHC_PRE+POST=0`)统一放 `docker/Dockerfile.rocm` ENV(镜像级,radixark+wip 都生效);`run_deepseek_v4.py` 不再重复设——删掉过时且不完整的 `SGLANG_FP8_PAGED_MQA_LOGITS_TORCH=1`(只 null metadata 路径、compute 仍 import deep_gemm,且被 aiter indexer flag 取代,注释也误导)。
+
+## E15 诊断+绕法(2026-06-28 凌晨)
+
+**E15(绕法已知)** MoE down_proj 收到 tuple:`deepseek_v2.py:382` 的 fused-clamp fp8 路径 `x = (x_fp8, x_scale)`,传给 `down_proj`(397)→ `linear.py:1575 should_use_tp_invariant_row_linear(input_parallel.shape[-1])`,tuple 无 `.shape`。根因 `use_fused_clamp_act_mul = _is_hip and SGLANG_OPT_USE_FUSED_CLAMP_ACT_MUL`(deepseek_v2.py:262,默认 True,environ:743)→ ROCm 默认走 aiter fused clamp,其 fp8 分支返回 (fp8,scale) tuple 但 tp-invariant row-linear 未 unwrap。绕法 `SGLANG_OPT_USE_FUSED_CLAMP_ACT_MUL=0` → 走 `silu_and_mul_clamp`(deepseek_v2.py:390,返回 tensor)。= wip 的 E7。已加 Dockerfile ENV,train18 验证。
