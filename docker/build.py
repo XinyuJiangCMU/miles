@@ -68,6 +68,8 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx942",
             "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi30x",
+            # NOTE: this gfx942 wheels release is not published yet — rocm-mi300 will not build
+            # until it exists (see docs/ci/02-docker-build.md). gfx950 / rocm-mi350 is ready.
             "WHEELS_TAG_ROCM": "rocm700-gfx942-v0.5.14",
         },
     },

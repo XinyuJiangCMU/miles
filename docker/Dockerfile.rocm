@@ -74,11 +74,14 @@ RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/ro
 # Transformer Engine + flash-attn arrive as prebuilt ROCm wheels (mirrors docker/Dockerfile's NV
 # wheels flow): download the WHEELS_TAG_ROCM release's .whl assets, then pip-install them — no
 # source build of TE / flash-attn here.
-RUN mkdir -p /tmp/wheels && \
-    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
+RUN case "${WHEELS_TAG_ROCM}" in *"${GPU_ARCH}"*) : ;; \
+      *) echo "WHEELS_TAG_ROCM=${WHEELS_TAG_ROCM} must match GPU_ARCH=${GPU_ARCH}" >&2; exit 1 ;; esac && \
+    mkdir -p /tmp/wheels && \
+    curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
 [subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
  for a in json.load(sys.stdin).get('assets',[]) if a['name'].endswith('.whl')]" && \
+    { ls /tmp/wheels/*.whl >/dev/null 2>&1 || { echo "no .whl assets in ${WHEELS_REPO} release ${WHEELS_TAG_ROCM}" >&2; exit 1; }; } && \
     ls -lh /tmp/wheels/
 RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true
 RUN --mount=type=cache,target=/root/.cache/pip pip install /tmp/wheels/transformer_engine-*.whl /tmp/wheels/flash_attn-*.whl
