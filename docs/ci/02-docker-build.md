@@ -34,7 +34,7 @@ The Dockerfile is the build recipe and nothing more: it knows no variants and no
 
 **Output** — one `radixark/miles` image for the platform buildx targets: the sglang base, then Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
-`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`).
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`). Like the CUDA Dockerfile it installs prebuilt wheels instead of compiling the heavy bits: `WHEELS_REPO` + `WHEELS_TAG_ROCM` name a release of ROCm wheels (Transformer Engine + flash-attn, built per ROCm minor × gfx arch). ROCm is single-arch x86 with the GPU arch chosen by `GPU_ARCH`, so `build.py` picks each `rocm-*` variant's `WHEELS_TAG_ROCM` by gfx (gfx950 → MI35x, gfx942 → MI30x); the Dockerfile downloads that release's `.whl` assets and `pip install`s them. Keeping the tag→variant mapping in `build.py` (never in the Dockerfile) is the same boundary as the CUDA `WHEELS_TAG_*`.
 
 ## Build script
 

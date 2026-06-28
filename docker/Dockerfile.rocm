@@ -29,8 +29,10 @@ ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
 ARG RCCL_TESTS_BRANCH=develop
 ARG RCCL_TESTS_PATH=projects/rccl-tests
 
-ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
-ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
+# Prebuilt ROCm wheels (Transformer Engine + flash-attn), mirroring docker/Dockerfile's NV flow.
+# build.py sets WHEELS_TAG_ROCM per gfx arch; see docs/ci/02-docker-build.md.
+ARG WHEELS_REPO=XinyuJiangCMU/miles-wheels-rocm
+ARG WHEELS_TAG_ROCM=rocm700-gfx950-v0.5.14
 
 # ======================================== Setup ================================================
 WORKDIR /root/
@@ -43,7 +45,7 @@ ENV PYTORCH_ROCM_ARCH=${GPU_ARCH}
 ENV GPU_ARCH_LIST=${GPU_ARCH}
 ENV AMDGPU_TARGET=${GPU_ARCH}
 
-# Transformer Engine build knobs for the v2.8_rocm branch.
+# ROCm arch / Transformer Engine env knobs (harmless leftovers now that TE ships as a prebuilt wheel).
 ENV NVTE_FRAMEWORK=pytorch
 ENV NVTE_ROCM_ARCH=${GPU_ARCH}
 ENV NVTE_USE_HIPBLASLT=1
@@ -51,7 +53,7 @@ ENV NVTE_USE_ROCM=1
 ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 
 # Patches + requirements are COPY'd just-in-time right before each consumer below, so editing a
-# patch / requirements.txt no longer busts the cached Transformer Engine / flash-attn build layers.
+# patch / requirements.txt doesn't bust the cached wheel-install / Megatron layers above it.
 # TODO: remove these patches once the changes are merged into the main codebase.
 
 # ======================================== Apt dependencies =====================================
@@ -69,18 +71,19 @@ RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/ro
     rm -rf /tmp/rocm-systems
 
 # ====================================== Python dependencies ====================================
-# Install Transformer Engine from the requested branch. NVTE_FUSED_ATTN=0 is scoped to
-# this build step only (skip the extra fused-attn kernel matrix rebuild), not the runtime env.
+# Transformer Engine + flash-attn arrive as prebuilt ROCm wheels (mirrors docker/Dockerfile's NV
+# wheels flow): download the WHEELS_TAG_ROCM release's .whl assets, then pip-install them — no
+# source build of TE / flash-attn here.
+RUN mkdir -p /tmp/wheels && \
+    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
+    | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
+[subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
+ for a in json.load(sys.stdin).get('assets',[]) if a['name'].endswith('.whl')]" && \
+    ls -lh /tmp/wheels/
 RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true
-RUN --mount=type=cache,target=/root/.cache/pip rm -rf /root/TransformerEngine && \
-    git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
-    cd /root/TransformerEngine && \
-    NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v
+RUN --mount=type=cache,target=/root/.cache/pip pip install /tmp/wheels/transformer_engine-*.whl /tmp/wheels/flash_attn-*.whl
 
 RUN --mount=type=cache,target=/root/.cache/pip pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
-
-RUN --mount=type=cache,target=/root/.cache/pip GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} \
-    pip -v install flash-attn==2.8.3 --no-build-isolation
 
 RUN --mount=type=cache,target=/root/.cache/pip pip install flash-linear-attention==0.4.2
 
@@ -152,7 +155,7 @@ ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
 # Keep GPUs visible to Ray num_gpus=0 coordinators so Megatron device checks do not crash.
 ENV RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 
-RUN rm -rf /root/.cache/pip /root/TransformerEngine /tmp/amd_patch
+RUN rm -rf /root/.cache/pip /tmp/wheels /tmp/amd_patch
 
 WORKDIR /root/
 

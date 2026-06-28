@@ -57,6 +57,7 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_TAG": "v0.5.14-rocm700-mi35x-20260627",
+            "WHEELS_TAG_ROCM": "rocm700-gfx950-v0.5.14",
         },
     },
     "rocm-mi300": {
@@ -67,6 +68,7 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx942",
             "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi30x",
+            "WHEELS_TAG_ROCM": "rocm700-gfx942-v0.5.14",
         },
     },
 }
