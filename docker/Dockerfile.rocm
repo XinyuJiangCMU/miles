@@ -45,7 +45,9 @@ ENV PYTORCH_ROCM_ARCH=${GPU_ARCH}
 ENV GPU_ARCH_LIST=${GPU_ARCH}
 ENV AMDGPU_TARGET=${GPU_ARCH}
 
-# ROCm arch / Transformer Engine env knobs (harmless leftovers now that TE ships as a prebuilt wheel).
+# Transformer Engine env. NVTE_ROCM_ARCH only mattered for compiling TE (now a prebuilt wheel), but
+# NVTE_USE_ROCM / NVTE_USE_HIPBLASLT / NVTE_FRAMEWORK may be read by TE at runtime to select the ROCm
+# path — do not drop them without checking.
 ENV NVTE_FRAMEWORK=pytorch
 ENV NVTE_ROCM_ARCH=${GPU_ARCH}
 ENV NVTE_USE_HIPBLASLT=1
