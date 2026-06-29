@@ -8,8 +8,8 @@
 #    build-arg:GPU_ARCH=gfx942
 #    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
 
-ARG SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
-FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
+ARG SGLANG_IMAGE_TAG=v0.5.14-rocm700-mi35x-20260627
+FROM rocm/sgl-dev:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
@@ -24,9 +24,6 @@ ARG MILES_COMMIT=main
 
 ARG GPU_ARCH=gfx950
 ARG MAX_JOBS=128
-
-ARG AITER_REPO=https://github.com/ROCm/aiter.git
-ARG AITER_COMMIT=v0.1.11.post1
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
 ARG RCCL_TESTS_BRANCH=develop
@@ -96,25 +93,14 @@ RUN rm -rf /root/Megatron-LM && \
     git apply /tmp/amd_patch/megatron.patch && \
     pip install -e .
 
-RUN pip uninstall -y sgl_kernel sglang || true
 RUN cd /sgl-workspace/sglang && \
     git reset --hard && \
-    git clean -fdx && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \
     else \
       git checkout FETCH_HEAD; \
     fi && \
-    git submodule sync --recursive && \
-    git submodule update --init --recursive && \
-    cd sgl-kernel && \
-    rm -f pyproject.toml && \
-    mv pyproject_rocm.toml pyproject.toml && \
-    AMDGPU_TARGET=${GPU_ARCH} python setup_rocm.py install && \
-    cd .. && \
-    rm -rf python/pyproject.toml && \
-    mv python/pyproject_other.toml python/pyproject.toml && \
     pip install -e "python[all_hip]" --no-deps
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
