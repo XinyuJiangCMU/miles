@@ -6,13 +6,30 @@
 
 | 项 | 值 |
 |---|---|
-| 运行镜像 | `xinyujiangcmu/miles:rocm700-mi35x-sglang0.5.14-20260627`(id `431eafe052e6`,67.9GB;本地 + registry 双备份;base `rocm/sgl-dev:v0.5.14`),8×MI355X/gfx950 |
+| 运行镜像 | `miles-rocm700-mi35x-dev-20260629`(本地 build,PR #1506;base `rocm/sgl-dev:v0.5.14-rocm700-mi35x-20260627` 自带 aiter `7d604afe5`(含 fused_clamp_act_mul)+ sglang fork + sgl_kernel + click 8.2.1),gfx950。⚠️ 旧镜像 `dev-20260627`(base 自带 aiter `a6bb49937` 缺该模块)→ silu blocker,已弃 |
 | docker run | `--device /dev/dri --device /dev/kfd --group-add video --ipc host --shm-size 128G --cap-add SYS_PTRACE --security-opt seccomp=unconfined --security-opt label=disable -v /mnt/data/data/hai:/workspace -v ~/.cache/huggingface:/root/.cache/huggingface ... sleep infinity`(`/workspace/models` 内三件套 fp8 27G + bf16 52G + torch_dist 52G + `/workspace/datasets`) |
 | ⚠️ 重建坑(live 修没 bake 进镜像) | **① 别加 `--network host`** —— 同机若有别的容器(如 hai-1)跑着 ray,host 网络下两个 ray head 撞端口(6379/8265)→ `ray start --head` 失败;不加即各用自有 netns。**② `pip install click==8.2.1`** —— 镜像内 click 8.4.2 打挂 ray 2.44.1 的 CLI(`ValueError: ... is not a valid Sentinel`,`ray/scripts/scripts.py add_command_alias`);8.2.1 修复。**③ `/root/miles` checkout `wip/dsv4-rocm-tile-kernels-import-guard`**(浅克隆用 `git fetch --depth=1 <miles-wip> <branch>` + `checkout -B`)。**④ indexer/MHC/MoE env 知识用 `launch_dsv4.sh` export(`Dockerfile.rocm` 173-208 未 bake)。** **⑤ `/sgl-workspace/sglang` checkout fork `sglang-miles-dsv4-rocm`**(editable,python-only;镜像 bake 的是无修复的 base `63e5bb2ca`,缺 E15/E20/E22/E23/E27 → 不修则 sglang 引擎 init 时 MoE down_proj 收 fp8 tuple 在 `should_use_tp_invariant_row_linear(input_parallel.shape)` 炸 `'tuple' object has no attribute 'shape'`;`git fetch <sglang-fork> sglang-miles-dsv4-rocm` + `checkout -B`)。原容器 `dsv4-fp8-v14` 被 SLURM 24h 超时回收销毁,重建为 `dsv4-fp8-v15`。 |
 | miles | 容器内 `radixark/main`;改动在 `XinyuJiangCMU/miles@wip/dsv4-rocm-tile-kernels-import-guard` |
 | sglang | fork `XinyuJiangCMU/sglang@sglang-miles-dsv4-rocm`;Dockerfile fetch 该 branch |
 | TE | `JessicaJiang-123/TransformerEngine@amd-qwen3-30b-a3b-fp8-dev`(blockwise fp8) |
 | 模型 | `Pinaster/DeepSeek-V4-Flash-FP8-4layer` |
+
+## 怎么跑(最近成功指令,每次跑通后覆盖本节)
+
+> 训练脚本进 repo:`scripts/amd/run-deepseek-v4-flash-fp8-4layer-amd.sh`(模仿 `scripts/amd/run-qwen3-4B-amd.sh`:
+> pkill 进程名清理头 + RAY/ROCm env + 全套 DSv4 rollout env + tilelang indexer + run_deepseek_v4.py full-train)。
+> 全套 rollout env 取自 `docker/Dockerfile.rocm` line 156-207(= sglang AMD CI `COMMON_ENV_VARS` + DSv4 E18/E19/E20)。
+
+- 节点/容器: `amd-mi350x-ses2-1` / `dsv4-fp8-v17`
+- 镜像: `miles-rocm700-mi35x-dev-20260629`(本地 build,PR #1506:base 升到 `rocm/sgl-dev:v0.5.14-rocm700-mi35x-20260627` 自带 aiter `7d604afe5` 含 `fused_clamp_act_mul`;sglang fork + sgl_kernel + click 8.2.1 已 bake;miles 仍需 checkout wip 取 actor 修 E2/E24/E25/E26)
+- ⚠️ 路径: 模型在容器内 `/workspace/workspace/models/...`(double workspace,mount `/mnt/data/data/hai:/workspace` + host 模型在 `workspace/models/`)
+- 起训练:
+  ```
+  docker exec -d dsv4-fp8-v17 bash -lc 'bash /workspace/workspace/dsv4-miles-amd/miles-dsv4-tile-guard/scripts/amd/run-deepseek-v4-flash-fp8-4layer-amd.sh > <log> 2>&1'
+  ```
+- 停训练(切配置/重跑前): 脚本清理头 `pkill -9 sglang; ray stop --force; pkill -9 ray; pkill -9 python`(**按进程名,bash 不 self-match**)。**别 docker restart**(没必要);**别 `pkill -f run_deepseek`**(self-match 杀自己 shell → 杀残 → zombie + 卡 VRAM)。
+- 验收(v17 torch-fn 实测通过,`train_v17_01`): rollout 256/256 → logprob `-1.82/-5.23`(有限不 NaN) → train step(`Timer 208.7s`、`actor_train_tflops 13.6`、`tok/s 8235`) → update_weights 15.9s → 进第 2 rollout。`train/loss=0.0` 是 4-layer toy 正常。
+- aiter 根因(本轮关键): 旧镜像 `dev-20260627` 的 base 自带 aiter `a6bb49937`(rocagents-fix 侧分支)**缺** `fused_clamp_act_mul`(PR #3057/v0.1.14 才引入)→ 与 base 自带 sglang(本就 import 该模块)配不上 → shared_experts silu 掉到 CUDA `silu_and_mul_clamp` 的 `cuda_fp8.h` JIT,gfx950 编不了 = silu blocker。PR #1506 换 base(aiter `7d604afe5` 有该模块)修根;`SGLANG_OPT_USE_FUSED_CLAMP_ACT_MUL` 走默认 True(aiter 路径),旧的 `=0` 歧路已弃。详见 E15/E16 更正。
 
 ## 核心结论:build 配方 + 一套 rollout env,不是一堆 bug
 
@@ -44,7 +61,7 @@
 - **E13** ✅ topk_v2 `<cuda/ptx> not found` → `USE_TOPK_V2=false`。
 - **E14** ✅ mhc `NameError deep_gemm` → `DEEPGEMM_HC_PRENORM=false`+`TILELANG_MHC=false` → aiter.ops.mhc。
 - **E15** ✅(已解,fork+PR) MoE down_proj 收 fused_clamp fp8 tuple `(x_fp8,x_scale)`;sglang-miles 的 true_on_policy(sglang upstream PR 26359)给 RowParallelLinear 加了 `should_use_tp_invariant_row_linear(input_parallel.shape[-1])`,在 tuple 上读 `.shape` 炸(sglang main 无此模块)。根因:`matmul_tp_inv` 仅 bf16/fp16/fp32,fp8 row-linear 必走 `quant_method.apply`(`Fp8LinearMethod` 本就拆 tuple)。修:`if not isinstance(self.quant_method, Fp8LinearMethod) and should_use_tp_invariant_row_linear(...)`(读 .shape 前短路)。**fork+pin(非 patch):** [`XinyuJiangCMU/sglang@sglang-miles-dsv4-rocm`](https://github.com/XinyuJiangCMU/sglang/tree/sglang-miles-dsv4-rocm),PR(branch sglang-miles-dsv4-rocm)(commit 链:tuple-skip → Fp8LinearMethod gate → torch fn path 3 修);Dockerfile fetch 该 branch。
-- **E16** ✅(已绕) silu `<cuda_fp8.h>` JIT(无 ROCm guard) —— E15 的 Fp8 gate 路径走 `FUSED_COMPRESS`(clamp=1)、不再走 `silu_and_mul_clamp`,自然避开。
+- **E16** ✅(已解,换 base aiter;⚠️ 早前"FUSED_COMPRESS 自然避开"的记述不成立) shared_experts(`DeepseekV2MLP.forward`,deepseek_v2.py:394)的 silu 掉到 CUDA `silu_and_mul_clamp`,JIT 编 `<cuda_fp8.h>` gfx950 失败。根因=**aiter 版本**:`use_fused_clamp_act_mul = _is_hip and SGLANG_OPT_USE_FUSED_CLAMP_ACT_MUL`(environ 默认 True)本应走 aiter `fused_clamp_act_mul`(triton,不碰 cuda_fp8.h),但该模块 PR #3057(2026-05-12)才进 aiter、v0.1.14 起才有;旧镜像 `dev-20260627` 的 base 自带 aiter `a6bb49937`(rocagents-fix 侧分支)**缺它** → 只能 `=0` → 掉回 CUDA silu。两难:`=1` 缺 aiter 模块 ModuleNotFound、`=0` 撞 cuda_fp8.h。**真解=补对 aiter**:换 base 到 `rocm/sgl-dev:v0.5.14-rocm700-mi35x-20260627`(aiter `7d604afe5`,= sglang `rocm.Dockerfile` 钉的 commit,含该模块),`FUSED_CLAMP_ACT_MUL` 走默认 True(PR #1506,= miles `[AMD] update ROCm sglang base image`)。`=0` 是已弃歧路。
 - **E17** ✅(已绕) cuda graph capture 在 ROCm colocate hang(GPU 0%、停在 `Capture cuda graph begin bs=256`);aiter/triton kernel 不兼容 cuda graph capture。绕:`miles/utils/arguments.py` colocate 块 `if is_hip() and not args.sglang_disable_cuda_graph: args.sglang_disable_cuda_graph = True`(经 `--sglang-*`→ServerArgs 自动映射,覆盖 normal/external、限 colocate+ROCm、NV 不影响)。
 - **E18** ✅(已解) aiter `get_config_file`(jit/core.py) glob `model_configs/*.csv` 后 `update_config_files` merge 写 `/tmp/aiter_configs`,走 FileBaton mp_lock;colocate 8+ engine 进程抢同一 baton 死锁(持有者卡 do_wait 不 release、全员 wait;清 lock/加大 watchdog 都治标)。**非 online tune**(AITER_ONLINE_TUNE 默认 0)。根因短路:`update_config_files` 开头 `if len(path_list)<=1: return` —— `AITER_CONFIG_GEMM_*`(6 个)+`AITER_CONFIG_FMOE` 各指 default 单文件,走单路径跳过 merge;缺的 shape 自动用 default kernel。(train26 实测 gemm baton 绕过、train28 实测 fmoe baton 绕过。)
 - **E19** ✅(已绕) rollout forward `tvm.error.InternalError: Tensor match failed Tensor<N,4,512>` @ `c4_v2.cuh`(`indexer.py forward_c4_indexer`)。compressor_v2 的 c4_v2 kernel `TensorMatcher` 期望 kv_input 2D,caller 传 3D。绕:`SGLANG_OPT_USE_COMPRESSOR_V2=false` 走 compressor v1 的 triton `_c128_compress_*` kernel。(train27/28 实测 c4_v2 不再撞。)

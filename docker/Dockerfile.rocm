@@ -29,8 +29,6 @@ ARG MILES_COMMIT=main
 ARG GPU_ARCH=gfx950
 ARG MAX_JOBS=128
 
-ARG AITER_REPO=https://github.com/ROCm/aiter.git
-ARG AITER_COMMIT=v0.1.11.post1
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
 ARG RCCL_TESTS_BRANCH=develop
