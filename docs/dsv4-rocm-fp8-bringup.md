@@ -6,7 +6,9 @@
 
 | 项 | 值 |
 |---|---|
-| 镜像 | base `rocm/sgl-dev:v0.5.14`,容器 `dsv4-fp8-v14`(8×MI355X) |
+| 运行镜像 | `xinyujiangcmu/miles:rocm700-mi35x-sglang0.5.14-20260627`(id `431eafe052e6`,67.9GB;本地 + registry 双备份;base `rocm/sgl-dev:v0.5.14`),8×MI355X/gfx950 |
+| docker run | `--device /dev/dri --device /dev/kfd --group-add video --ipc host --shm-size 128G --cap-add SYS_PTRACE --security-opt seccomp=unconfined --security-opt label=disable -v /mnt/data/data/hai:/workspace -v ~/.cache/huggingface:/root/.cache/huggingface ... sleep infinity`(`/workspace/models` 内三件套 fp8 27G + bf16 52G + torch_dist 52G + `/workspace/datasets`) |
+| ⚠️ 重建坑(live 修没 bake 进镜像) | **① 别加 `--network host`** —— 同机若有别的容器(如 hai-1)跑着 ray,host 网络下两个 ray head 撞端口(6379/8265)→ `ray start --head` 失败;不加即各用自有 netns。**② `pip install click==8.2.1`** —— 镜像内 click 8.4.2 打挂 ray 2.44.1 的 CLI(`ValueError: ... is not a valid Sentinel`,`ray/scripts/scripts.py add_command_alias`);8.2.1 修复。**③ `/root/miles` checkout `wip/dsv4-rocm-tile-kernels-import-guard`**(浅克隆用 `git fetch --depth=1 <miles-wip> <branch>` + `checkout -B`)。**④ indexer/MHC/MoE env 知识用 `launch_dsv4.sh` export(`Dockerfile.rocm` 173-208 未 bake)。** **⑤ `/sgl-workspace/sglang` checkout fork `sglang-miles-dsv4-rocm`**(editable,python-only;镜像 bake 的是无修复的 base `63e5bb2ca`,缺 E15/E20/E22/E23/E27 → 不修则 sglang 引擎 init 时 MoE down_proj 收 fp8 tuple 在 `should_use_tp_invariant_row_linear(input_parallel.shape)` 炸 `'tuple' object has no attribute 'shape'`;`git fetch <sglang-fork> sglang-miles-dsv4-rocm` + `checkout -B`)。原容器 `dsv4-fp8-v14` 被 SLURM 24h 超时回收销毁,重建为 `dsv4-fp8-v15`。 |
 | miles | 容器内 `radixark/main`;改动在 `XinyuJiangCMU/miles@wip/dsv4-rocm-tile-kernels-import-guard` |
 | sglang | fork `XinyuJiangCMU/sglang@sglang-miles-dsv4-rocm`;Dockerfile fetch 该 branch |
 | TE | `JessicaJiang-123/TransformerEngine@amd-qwen3-30b-a3b-fp8-dev`(blockwise fp8) |
@@ -87,6 +89,20 @@ sanity 验收后转「性能优先」,把上面三个待办(mhc / indexer / roll
 ## Gluon kernel 提速实测(2026-06-28):aiter gluon blockscale GEMM 候选 = 不成
 
 接「性能优先」方向,试 PyTorch TokenSpeed-kernel blog 的路子——用 Gluon 写 kernel 对标 AITER 求提速,先挑 a8w8 blockscale fp8 GEMM。**结论:aiter 的 gluon 版 `gemm_a8w8_blockscale` 数值正确(cos=1.000、relerr_vs_ck=0)但比 aiter 的 CK/asm 生产 kernel 慢 2–8×**(真实 DSv4 形状,大 M geomean gl/ck=0.28x、gl/asm=0.42x;小 M gl/ck=0.13x;K=4096 最差 ~5×),无任何形状赢、对纯 triton 也基本不赢。根因:这版 gluon kernel 没用 blog 的关键技法(非硬件 mfma_scaled、无 async_copy、非 persistent),是早期未优化 kernel;blog 的胜绩在 attention/MoE 是别的 gluon kernel。落地分析:训练走 TE 自带 vendored triton kernel(`transformer_engine/.../blockwise_fp8_gemm.py`,不碰 aiter)、DSv4 稠密形状不在 sglang tuned 白名单(走 CK)+ 服务系统 triton 3.4(<3.6 跑不了 gluon,且为保底)→ gluon 落不到本训练/本容器服务,价值=kernel 表征(生态/未来可落)。完整数据表 + 方法学 + 运维坑(aiter baton 锁死等、SLURM 24h 分配超时回收容器)详见 `docs/gluon-gemm-bench-findings.md`。
+
+## tilelang DSv4 indexer(2026-06-29):gfx950 可用,端到端 sanity 通过
+
+用 **tilelang indexer** 跑 V4 4-layer training(替代 E20 定案的 torch-fn 绿底)。研究 + 实测:
+
+**AMD 历史**(sglang git):`#24933`(2026-05-18,kkHuang-amd)把 tilelang 做成 AMD indexer 主路(recipe = `SGLANG_OPT_USE_TILELANG_INDEXER=true` + `SGLANG_FP8_PAGED_MQA_LOGITS_TORCH=1` + `SGLANG_HACK_FLASHMLA_BACKEND=tilelang` + `SGLANG_OPT_DPSK_V4_RADIX=1`,GSM8K 0.948);`#26662`(2026-05-29)CI 翻回 aiter —— **纯 CI 整合,无 perf/正确性回归记录**。tilelang 是 eager bring-up 占位 kernel(`NUM_CU=256` 硬编、正确性只在 CUDA 验过 `#24989`、gfx94x 有 fnuz 崩 `#27124`),被退成 off-path。真路径 = `dsa/tilelang_kernel.py:1495 tilelang_fp8_paged_mqa_logits`(gfx950 用 e4m3fn)。
+
+**gfx950 启用**:`bash launch_dsv4.sh tilelang <log>`(= `SGLANG_OPT_USE_TILELANG_INDEXER=true`,保留 `FP8_PAGED_MQA_LOGITS_TORCH=1` 作 metadata companion;weights 已天然 fp32)。dispatch 优先级 tilelang > aiter > torch。
+
+**实测(容器 dsv4-fp8-v15)**:
+- **kernel 冒烟**(`loop-dsv4-fp8-train/tilelang_indexer_smoke.py` 直调):gfx950 真 JIT 编译(hipcc,"Unsupported FP8 type in HIP codegen" 守卫没触发)+ 跑出 logits finite ✓。装的 tilelang(`0.1.7.post3+cuda` 标签误导)二进制实含 HIP/ROCm 后端(`CodeGenTileLangHIP` + ROCm runtime)。
+- **端到端**(`train_tilelang3.log`):引擎 fired up → rollout 256/256 → actor update_weights → eval → **train step 真迭代到 step 19+(每步 ~2.8min),无崩无 NaN**。验收口径"train step 真迭代不崩不 NaN"用 **tilelang indexer** 达成(非 torch-fn);`train/loss=0.0` 是 4-layer toy 乱码 rollout(reward 0→advantage 0)的正常结果。
+
+**待办**:① 信训练 metric 前做 **top-k vs fp32 ground-truth parity**(⚠️ 不能拿 torch-fn 当 oracle —— gfx950 上 torch-fn `.view(e4m3fnuz)` 而 K cache 写的是 e4m3fn,格式不一致;按写入格式 e4m3fn dequant 算 GT)。② tilelang vs torch-fn/aiter rollout 提速对比。③ 均需先 `salloc --no-shell -w <node> --time=...` 占住节点再跑(本轮 19 步后容器被 SLURM 节点回收 = 第 3 次同款,不占节点必被抢)。
 
 ## 24h 目标 + TODO(先对再快)
 
