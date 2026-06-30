@@ -153,6 +153,12 @@ sanity liveness 已过(train38),接下来按 **correctness before speed** 推进
 
 ### R3 严格 on-policy(见待办 ②)✅ 已修通(loop 2026-06-30)
 - [x] **修通(loop R42–R47)**:train44(2026-06-28)强开崩 `rollout_routed_experts is required`,旧归因"aiter topk producer 没接线 / deep sglang/aiter / 超本阶段"是**误诊**。双探针(GEN_DEBUG/RE_DEBUG)实测真根因 = Rust `sglang_router` v0.3.2(pin openai-protocol 1.0.0、无 `#[serde(flatten)]` catch-all)转发 /generate 时丢掉 `return_routed_experts` 字段(rollout 设了 True、http_server 收到 False)。修法:ROCm R3 走 miles python router(raw-bytes 透传,`--use-miles-router` is_hip gate)+ 删 disable guard,1 flag 零重 build,3 rollout+3 train step+0 崩(miles `b9047e3`)。详见 E24 + 上「性能优化实测结论」R3 段。
+- [x] **R3 价值验证 A/B + abs_diff 3.6 定性(loop R49–R55)**:修通后做 R3 on/off logprob-diff A/B(两臂同 miles router、只 toggle routing replay,隔离 router confound)。结果 **R3-ON `train_rollout_logprob_abs_diff` 3.66/3.56/3.64 ≈ R3-OFF 3.63/3.63 → R3 在 4-layer toy 上没把 on-policy 散度压下来**。诊断(2 agent + 实测):
+  - ① R3 wiring **完整**:`moe_enable_routing_replay` 是 red herring 死代码(commit 228a36409 把 Megatron RouterReplay 换成 miles `routing_replay_manager`;router.py:207 无条件 register;NV 同此设计、非 ROCm 漏配)。
+  - ② 4-layer 配置 `n_hash_layers=3` → layer 1/2/3 hash-routed(确定性、R3 正确跳过)、**只 layer 4 是 routed → R3 leverage≈0,故 ON≈OFF 自洽**。R3 价值要全/深模型(多 routed 层)或 BF16(去 FP8 噪声)才显。
+  - ③ **abs_diff 3.6 不是缺陷、不是换的 kernel、不是 R3**:`train_v17_01.log`(本 loop 前、零 kernel:bias_swiglu_fusion/moe_permute_fusion/use_rollout_routing_replay 全 False)实测 abs_diff=3.61/3.73/3.70 —— **3.6 是现 v17 容器 FP8+4-layer toy 的 train(Megatron 重算) vs rollout(sglang) 固有实现差基线**;换的 4 个 kernel(permute 3.71 / q-rmsnorm 3.65 / SwiGLU fused 3.65≈inline 3.59 / MHC)全 ≈ 此 baseline、零引入(三重排除:零 kernel 就 3.6 + 单元 parity MHC 1.67e-6 / q-rmsnorm·SwiGLU bitwise)。
+  - ④ **⚠️ 更正本文档 line 100 的 "on-policy abs_diff 0.32"**:那是旧容器 train39(v14/v15,log 已删)、**不可复现、不能当基准**;现 v17 可复现基线 = 3.6。3.6 nats=概率差 36×=**结构性偏差非舍入**(舍入只 ~0.01-0.3),最可能 FP8 train(TE blockwise) vs sglang FP8 推理路径差 + DSA 稀疏注意力 train/rollout 选不同 top-k KV。
+  - ⑤ 验收 line 135 `abs_diff≤0.04` 在此 4-layer FP8 toy **达不到**(toy 非干净 on-policy);要全模型 / BF16 才验得出。下一步:**BF16 全链对照**(abs_diff 塌到 ~0 = FP8 路径锅;仍 3.6 = DSA 结构差)。
 
 ### 显式不做(防 24h 空转)
 - 不追 4-layer 收敛 / loss 下降 / eval 准确率(模型未训练,eval 无意义)
