@@ -14,6 +14,9 @@ from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 class RMSNorm(nn.Module):
     """
     Kept in pure PyTorch with FP32 weights to match SGLang's compressor norm.
+    Intentionally NOT routed through Liger triton RMSNorm even on ROCm: this norm is
+    parity-pinned to SGLang's rollout-side norm, and triton's reduction order can flip
+    a few bf16 bits — not worth the rollout<->train divergence risk for <1% gain.
 
     Args:
         dim: Dimension of the input tensor.
