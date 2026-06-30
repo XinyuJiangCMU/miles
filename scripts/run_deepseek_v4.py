@@ -119,24 +119,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.model_local_dir = self.model_dir
         if self.model_name in _PRO_MODEL_NAMES:
             self.enable_r3 = False
-        # R3 (rollout routing replay) does not work on ROCm: although the topk-stage capture
-        # hook (select_experts -> _post_process_topk_ids) is platform-independent and the
-        # RoutedExpertsCapturer is created regardless of device, the PRODUCER that feeds it is
-        # effectively CUDA-only for the dsv4 aiter/ROCm topk path (same pattern that
-        # model_runner.init_indexer_capturer guards explicitly: "Producer wiring is CUDA-only
-        # ... other backends create a capturer but never feed it"). So enable_return_routed_experts
-        # yields empty routing, meta_info lacks "routed_experts", and train_actor's replay raises
-        # "rollout_routed_experts is required". Verified: train44 forced R3 on under ROCm and still
-        # crashed at the first train step. Disable R3 on ROCm (NV unaffected); enabling it needs
-        # the aiter topk producer wired to feed the capturer (deep sglang/aiter work, out of scope).
-        if self.enable_r3:
-            try:
-                from sglang.srt.utils import is_hip
-
-                if is_hip():
-                    self.enable_r3 = False
-            except Exception:
-                pass
+        # R3 (rollout routing replay) works on ROCm. The earlier belief that it was blocked by a
+        # "CUDA-only aiter topk producer" was wrong: the capturer/producer/readout are all
+        # platform-independent and wired (verified with GEN_DEBUG/RE_DEBUG probes). The real issue
+        # was that the Rust sglang_router (v0.3.2, pinning openai-protocol 1.0.0 whose
+        # GenerateRequest has no serde(flatten) catch-all) silently drops the return_routed_experts
+        # field on /generate passthrough, so routed_experts never reached the scheduler and
+        # train_actor's replay raised "rollout_routed_experts is required". Fix: on ROCm route
+        # through the miles python router (raw-bytes passthrough preserves the field) via the
+        # --use-miles-router toggle added below. NV is unaffected (keeps the Rust router).
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
         self.colocate = self.rollout_num_nodes == 0
@@ -578,6 +569,17 @@ def _train(args: ScriptArgs):
 
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
+        # ROCm: the Rust sglang_router drops return_routed_experts on /generate passthrough
+        # (openai-protocol 1.0.0 has no serde flatten catch-all); route through the miles python
+        # router (raw-bytes passthrough) so routed_experts reaches the scheduler. NV keeps the
+        # Rust router (unaffected).
+        try:
+            from sglang.srt.utils import is_hip
+
+            if is_hip():
+                misc_args += "--use-miles-router "
+        except Exception:
+            pass
 
     if args.train_deterministic:
         misc_args += "--deterministic-mode "
