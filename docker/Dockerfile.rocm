@@ -21,8 +21,10 @@ ARG SGLANG_REPO=https://github.com/XinyuJiangCMU/sglang.git
 ARG SGLANG_BRANCH=sglang-miles-dsv4-rocm
 ARG SGLANG_COMMIT=""
 
-ARG MEGATRON_REPO=radixark/Megatron-LM
-ARG MEGATRON_BRANCH=miles-main
+# SwiGLU fused clamp+offset (DSv4 rank1 backward speedup) lives on this fork branch.
+# Base = radixark/Megatron-LM miles-main @79fc0894d; SwiGLU commit 262b82419.
+ARG MEGATRON_REPO=XinyuJiangCMU/Megatron-LM
+ARG MEGATRON_BRANCH=amd/dsv4-swiglu-fused-clamp-20260630
 
 ARG MILES_COMMIT=main
 
