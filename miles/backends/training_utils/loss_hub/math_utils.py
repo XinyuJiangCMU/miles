@@ -11,6 +11,17 @@ import torch.nn.functional as F
 from miles.backends.training_utils.cp_utils import slice_loss_masks_for_local_cp
 from miles.backends.training_utils.parallel import get_parallel_state
 
+# ROCm: route the true_on_policy log-prob through Liger's triton cross-entropy
+# (computes -log_softmax[target] with in-place gradient, saving two [R, V]
+# materializations). NV keeps torch. Only the no-entropy path is routed, since
+# Liger overwrites full_logits in place (would alias the entropy backward).
+_USE_LIGER_CE = torch.version.hip is not None
+if _USE_LIGER_CE:
+    try:
+        from liger_kernel.transformers.functional import liger_cross_entropy
+    except Exception:
+        _USE_LIGER_CE = False
+
 
 def compute_ess_ratio_contribution(
     ppo_kl: torch.Tensor,
@@ -934,14 +945,22 @@ def _calculate_log_probs_and_entropy_true_on_policy(
 
     full_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
     _maybe_dump_top_logprob_backward("full_logits", full_logits)
-    log_probs_full = torch.log_softmax(full_logits, dim=-1)
-    _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
-    log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
-    _maybe_dump_top_logprob_backward("log_prob", log_prob)
 
     entropy = None
-    if with_entropy:
-        probs = log_probs_full.exp()
-        entropy = -(probs * log_probs_full).sum(dim=-1)
+    if _USE_LIGER_CE and not with_entropy:
+        # ROCm: Liger triton cross-entropy computes -log_softmax[target] directly and
+        # writes the gradient in-place into full_logits, avoiding two extra [R, V]
+        # materializations (log_probs_full + its softmax grad). The entropy path keeps
+        # torch because Liger's in-place overwrite of full_logits would alias the entropy
+        # backward. with_entropy is False whenever entropy_coef == 0 (common GRPO default).
+        log_prob = -liger_cross_entropy(full_logits, tokens, reduction="none")
+    else:
+        log_probs_full = torch.log_softmax(full_logits, dim=-1)
+        _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
+        log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
+        if with_entropy:
+            probs = log_probs_full.exp()
+            entropy = -(probs * log_probs_full).sum(dim=-1)
+    _maybe_dump_top_logprob_backward("log_prob", log_prob)
 
     return log_prob, entropy
