@@ -92,6 +92,11 @@ RUN GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} \
 
 RUN pip install flash-linear-attention==0.4.2
 
+# ROCm MHC (and future RL ops): Liger triton fused fwd+bwd kernels. gfx950 has no
+# tile_kernels (CUDA-only); Liger is pure triton (cross-platform) and gated in-code
+# by torch.version.hip, so NV is unaffected. See ops/hyper_connection.py.
+RUN pip install liger-kernel==0.8.0
+
 RUN rm -rf /root/Megatron-LM && \
     git clone --recursive -b ${MEGATRON_BRANCH} https://github.com/${MEGATRON_REPO}.git /root/Megatron-LM && \
     cd /root/Megatron-LM && \

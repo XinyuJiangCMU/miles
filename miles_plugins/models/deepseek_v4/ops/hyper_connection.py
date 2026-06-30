@@ -24,6 +24,21 @@ from torch import Tensor
 # ``post_mult_value``.
 _HC_POST_MULT_VALUE = 2.0
 
+# ROCm: route MHC through Liger's triton fused fwd+bwd kernels. gfx950 has no
+# tile_kernels (CUDA-only) and sglang's tilelang mhc is forward-only + its fused
+# kernel hits a missing HIP op; Liger has both forward and backward in triton.
+# NV (torch.version.hip is None) keeps the existing torch path byte-for-byte.
+_USE_LIGER_MHC = torch.version.hip is not None
+if _USE_LIGER_MHC:
+    try:
+        from liger_kernel.transformers.functional import (
+            liger_mhc_coeffs,
+            liger_mhc_pre,
+            liger_mhc_post_res,
+        )
+    except Exception:
+        _USE_LIGER_MHC = False
+
 
 # ---------------------------------------------------------------------------
 # ROCm / portable mHC implementation.
@@ -244,7 +259,32 @@ class DeepSeekV4HyperConnectionUtil:
         dtype = x.dtype
         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
 
-        if not torch.is_grad_enabled():
+        if _USE_LIGER_MHC:
+            # Liger triton fused coeffs (sinkhorn + pre/post/comb) + pre-apply.
+            # phi is the transpose of DSv4 fn ([M,K] -> [K,M]); eps defaults in
+            # Liger differ from DSv4 so pre_eps/sinkhorn_eps/rms_eps are forced.
+            phi = hc_fn.t().contiguous()
+            h_pre, post, comb = liger_mhc_coeffs(
+                x_bf16,
+                phi,
+                hc_base,
+                hc_scale[0],
+                hc_scale[1],
+                hc_scale[2],
+                allow_fp32=False,
+                tmax=self.hc_sinkhorn_iters,
+                rms_eps=self.norm_eps,
+                pre_eps=self.hc_eps,
+                sinkhorn_eps=self.hc_eps,
+                post_mult=_HC_POST_MULT_VALUE,
+            )
+            layer_input = liger_mhc_pre(x_bf16, h_pre)
+            # Keep post as Liger's native (..., hc); do NOT unsqueeze to (..., hc, 1).
+            # LigerMHCPostResFunction.backward returns the post gradient as (..., hc),
+            # so unsqueezing makes autograd reject it at the train step (invalid
+            # gradient [., hc] vs expected [., hc, 1]). hc_post_raw feeds post
+            # straight into liger_mhc_post_res, which wants (..., hc) anyway.
+        elif not torch.is_grad_enabled():
             post, comb, layer_input = mhc_pre_big_fuse(
                 x_bf16,
                 hc_fn,
@@ -288,7 +328,15 @@ class DeepSeekV4HyperConnectionUtil:
         dtype = x.dtype
         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
         res_bf16 = (residual if residual.dtype == torch.bfloat16 else residual.bfloat16()).contiguous()
-        out = mhc_post(x_bf16, res_bf16, post, comb)
+        if _USE_LIGER_MHC:
+            # comb must be transposed: DSv4 sums comb over dim-2, Liger over dim-1
+            # (h_res == comb elementwise but opposite reduction axis). Skipping the
+            # transpose silently corrupts the output (~28% end-to-end error).
+            out = liger_mhc_post_res(
+                res_bf16, x_bf16, post, comb.transpose(-1, -2).contiguous()
+            )
+        else:
+            out = mhc_post(x_bf16, res_bf16, post, comb)
         return out.to(dtype)
 
     def hc_head_raw(
