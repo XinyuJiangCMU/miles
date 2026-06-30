@@ -112,7 +112,10 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
 
         config.dsv4_swiglu_limit = getattr(self.hf_config, "swiglu_limit", 0.0)
         if config.dsv4_swiglu_limit > 0:
-            config.bias_activation_fusion = False
+            # ROCm: fused swiglu now carries clamp+offset (Megatron fused_bias_swiglu.py),
+            # so keep bias_activation_fusion ON to run the triton fwd+bwd path instead of the
+            # slow inline-glu torch autograd. NV keeps fusion OFF (inline) byte-for-byte.
+            config.bias_activation_fusion = torch.version.hip is not None
             config.activation_func_clamp_value = config.dsv4_swiglu_limit
 
         config.dsv4_o_groups = getattr(self.hf_config, "o_groups", 8)
