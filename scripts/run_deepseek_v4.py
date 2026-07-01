@@ -569,6 +569,16 @@ def _train(args: ScriptArgs):
 
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
+        # Indexer (DSA KV top-k) replay: pin the training recompute's indexer selection to the
+        # rollout's captured top-k, the same on-policy motive as routing replay. Cross-platform.
+        misc_args += "--use-rollout-indexer-replay "
+        # ROCm toy: the sglang IndexerTopkCapturer host buffer is sized by KV-pool capacity x
+        # index_topk (512), far larger than the tokens actually captured; on the 4-layer toy that
+        # over-allocation OOMs host-pinned RAM. Cap the KV pool so the buffer fits (stopgap; the
+        # real fix is to size the capturer by actual capture tokens upstream in sglang). Toy-only,
+        # so real models / NV are unaffected.
+        if "4layer" in args.model_name:
+            misc_args += "--sglang-max-total-tokens 1000000 "
         # ROCm: the Rust sglang_router drops return_routed_experts on /generate passthrough
         # (openai-protocol 1.0.0 has no serde flatten catch-all); route through the miles python
         # router (raw-bytes passthrough) so routed_experts reaches the scheduler. NV keeps the

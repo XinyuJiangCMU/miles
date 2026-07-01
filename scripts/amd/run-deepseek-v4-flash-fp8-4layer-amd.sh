@@ -48,6 +48,11 @@ export SGLANG_ROCM_USE_MULTI_STREAM=false
 export AITER_BF16_FP8_MOE_BOUND=0
 export SGLANG_DSV4_FP4_EXPERTS=false
 export SGLANG_OPT_USE_TILELANG_INDEXER=true
+# broadcast the DSA indexer top-k from rank 0 across attn-TP ranks so each rank holds the
+# identical full-batch selection (indexer top-k is per-query, head-independent). This lets the
+# IndexerTopkCapturer capture under TP attention (not just DP), which the rollout->train
+# indexer replay needs on this TP=4 toy.
+export SGLANG_DSA_TOPK_BROADCAST=1
 export SGLANG_OPT_USE_COMPRESSOR_V2=false
 
 # pin each aiter config to a single file to avoid colocate config-merge baton deadlock
