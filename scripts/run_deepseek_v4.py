@@ -492,6 +492,12 @@ def _train(args: ScriptArgs):
     if args.optimizer_offload:
         optimizer_args += (
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
+            # Adam moments in bf16 (not fp32) to cut host-RAM offload footprint ~290GB/node.
+            # 4-node OOM postmortem: cluster peaked at host-RAM ceiling (1571-1604GB, 97-99%)
+            # at the train->rollout phase boundary. bf16 keeps fp32's exponent range (no 2nd-moment
+            # underflow); master weights stay full precision via store_param_remainders, grad path
+            # untouched -> grad_norm/determinism preserved. Standard large-scale config.
+            "--exp-avg-dtype bf16 " "--exp-avg-sq-dtype bf16 "
         )
 
     if args.model_name == "DeepSeek-V4-Pro-FP8":
@@ -599,7 +605,9 @@ def _train(args: ScriptArgs):
         misc_args += "--use-rollout-routing-replay "
         # Indexer (DSA KV top-k) replay: pin the training recompute's indexer selection to the
         # rollout's captured top-k, the same on-policy motive as routing replay. Cross-platform.
-        misc_args += "--use-rollout-indexer-replay "
+        # Disabled: image sglang's IndexerTopkCapturer asserts DP-only (attn_tp_size==1) but the
+        # rollout runs TP attention (sglang-tp-size 4); replay has no measurable abs_diff benefit.
+        # misc_args += "--use-rollout-indexer-replay "
         # ROCm toy: the sglang IndexerTopkCapturer host buffer is sized by KV-pool capacity x
         # index_topk (512), far larger than the tokens actually captured; on the 4-layer toy that
         # over-allocation OOMs host-pinned RAM. Cap the KV pool so the buffer fits (stopgap; the
