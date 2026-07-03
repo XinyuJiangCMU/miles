@@ -341,6 +341,34 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     # H200: 8 GPUs/node
     if actor_num_gpus_per_node == 8:
+        if total_gpus == 32:  # 4 nodes x 8 GPUs (MI355X, full Flash)
+            # PP4: 43 layers -> first 11 + 2 middle stages x 11 + last 10 = 43.
+            # 291B on 32 GPUs; --optimizer-cpu-offload in the recipe.
+            return (
+                "--tensor-model-parallel-size 8 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 4 "
+                "--decoder-first-pipeline-num-layers 11 "
+                "--decoder-last-pipeline-num-layers 10 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+        if total_gpus == 24:  # 3 nodes x 8 GPUs (MI355X, full Flash)
+            # 3-node bring-up. TP8 within a node, PP3 = one pipeline stage per
+            # node, EP8 on the 8 TP ranks per stage (ETP1). 43 layers over PP3:
+            # first 15 + middle 14 + last 14 = 43. 291B on 24 GPUs is memory-
+            # tight; relies on --optimizer-cpu-offload (already in the recipe).
+            return (
+                "--tensor-model-parallel-size 8 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 3 "
+                "--decoder-first-pipeline-num-layers 15 "
+                "--decoder-last-pipeline-num-layers 14 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
         if total_gpus == 64:  # 8 nodes x 8 GPUs
             return (
                 "--tensor-model-parallel-size 8 "
