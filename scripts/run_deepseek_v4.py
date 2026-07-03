@@ -492,13 +492,20 @@ def _train(args: ScriptArgs):
     if args.optimizer_offload:
         optimizer_args += (
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
-            # Adam moments in bf16 (not fp32) to cut host-RAM offload footprint ~290GB/node.
-            # 4-node OOM postmortem: cluster peaked at host-RAM ceiling (1571-1604GB, 97-99%)
-            # at the train->rollout phase boundary. bf16 keeps fp32's exponent range (no 2nd-moment
-            # underflow); master weights stay full precision via store_param_remainders, grad path
-            # untouched -> grad_norm/determinism preserved. Standard large-scale config.
-            "--exp-avg-dtype bf16 " "--exp-avg-sq-dtype bf16 "
         )
+        if args.actor_num_nodes == 4:
+            # 4-node (32 GPU) host-RAM fix, all fp32 (no precision loss). DSv4-Flash's canonical
+            # config is 8 nodes (PP8); on 4 nodes (PP4) each node holds 2x the layers, so the fp32
+            # optimizer CPU-offload alone is ~1160GB/node (~77% of 1.5TB) and the rollout weight-park
+            # then pushes host to 95% -> OOM at the step0->step1 transition. (bf16 Adam moments do
+            # NOT help: --optimizer-cpu-offload keeps its host buffers fp32 regardless of
+            # --exp-avg-dtype, which only touches the on-GPU precision-aware path.) The fix that
+            # works: keep 34% of the optimizer state on the GPU (offload-fraction 0.66) and don't
+            # park Megatron weights to host during rollout (--no-offload-train). Together they bring
+            # the 4-node host peak 95% -> ~74%, passing the transition. Pair with
+            # --sglang-mem-fraction-static 0.6 (see relaunch script) so the on-GPU optimizer slice
+            # fits beside sglang during rollout.
+            optimizer_args += "--optimizer-offload-fraction 0.66 " "--no-offload-train "
 
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         sglang_world_size = 32
