@@ -33,8 +33,10 @@ ARG MAX_JOBS=128
 
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
-ARG RCCL_TESTS_BRANCH=develop
 ARG RCCL_TESTS_PATH=projects/rccl-tests
+# Pinned to develop HEAD @ 2026-07-01 (the commit dev-local-20260703 built its *_perf from);
+# unpinned develop drifted and broke gfx950 compilation on 2026-07-04.
+ARG RCCL_TESTS_COMMIT=746c7b3c9e78b094389e19499919fdd43a0b6a90
 
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/JessicaJiang-123/TransformerEngine.git
 ARG TRANSFORMER_ENGINE_BRANCH=amd-qwen3-30b-a3b-fp8-dev
@@ -69,13 +71,13 @@ RUN apt update
 # Install build tools and diagnostics utilities.
 RUN apt install -y build-essential cmake dnsutils ethtool git nvtop rsync
 
-# Build rccl-tests diagnostics binaries.
-RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/rocm-systems && \
-    make -C /tmp/rocm-systems/${RCCL_TESTS_PATH} -j$(nproc) \
-      HIP_HOME=/opt/rocm \
-      NCCL_HOME=/opt/rocm \
-      GPU_TARGETS=${GPU_ARCH} && \
-    cp /tmp/rocm-systems/${RCCL_TESTS_PATH}/build/*_perf /usr/local/bin/ && \
+# Build rccl-tests diagnostics binaries (shallow fetch-by-sha of the pinned commit).
+RUN mkdir -p /tmp/rocm-systems && cd /tmp/rocm-systems && git init -q && \
+    git remote add origin ${RCCL_TESTS_REPO} && \
+    git fetch --depth 1 origin ${RCCL_TESTS_COMMIT} && git checkout -q FETCH_HEAD && \
+    make -C ${RCCL_TESTS_PATH} -j$(nproc) \
+      HIP_HOME=/opt/rocm NCCL_HOME=/opt/rocm GPU_TARGETS=${GPU_ARCH} && \
+    cp ${RCCL_TESTS_PATH}/build/*_perf /usr/local/bin/ && \
     rm -rf /tmp/rocm-systems
 
 # ====================================== Python dependencies ====================================
