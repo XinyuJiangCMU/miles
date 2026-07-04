@@ -18,7 +18,7 @@ SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 # RowParallelLinear.forward, skip true_on_policy tp_invariant when input is the aiter fused_clamp
 # fp8 pre-quant tuple (which has no .shape) — matches sglang main / NV behaviour.
 ARG SGLANG_REPO=https://github.com/XinyuJiangCMU/sglang.git
-ARG SGLANG_BRANCH=sglang-miles-dsv4-rocm
+ARG SGLANG_BRANCH=amd/dsv4-flash-rocm-rollout-20260703
 ARG SGLANG_COMMIT=""
 
 # SwiGLU fused clamp+offset (DSv4 rank1 backward speedup) lives on this fork branch.

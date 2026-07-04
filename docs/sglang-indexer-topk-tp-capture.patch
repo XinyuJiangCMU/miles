@@ -1,6 +1,6 @@
 # sglang IndexerTopkCapturer: allow TP-attention capture (drop DP-only assert)
 #
-# Applies to the sglang fork branch `sglang-miles-dsv4-rocm`
+# Applies to the sglang fork branch `amd/dsv4-flash-rocm-rollout-20260703`
 # (python/sglang/srt/state_capturer/indexer_topk.py).
 #
 # The capturer asserted attn_tp_size==1 (DP attention only). The indexer top-k is a
