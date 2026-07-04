@@ -494,18 +494,22 @@ def _train(args: ScriptArgs):
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
         if args.actor_num_nodes == 4:
-            # 4-node (32 GPU) host-RAM fix, all fp32 (no precision loss). DSv4-Flash's canonical
-            # config is 8 nodes (PP8); on 4 nodes (PP4) each node holds 2x the layers, so the fp32
-            # optimizer CPU-offload alone is ~1160GB/node (~77% of 1.5TB) and the rollout weight-park
-            # then pushes host to 95% -> OOM at the step0->step1 transition. (bf16 Adam moments do
-            # NOT help: --optimizer-cpu-offload keeps its host buffers fp32 regardless of
-            # --exp-avg-dtype, which only touches the on-GPU precision-aware path.) The fix that
-            # works: keep 34% of the optimizer state on the GPU (offload-fraction 0.66) and don't
-            # park Megatron weights to host during rollout (--no-offload-train). Together they bring
-            # the 4-node host peak 95% -> ~74%, passing the transition. Pair with
+            # 4-node (32 GPU) memory fix, all fp32 (no precision loss). DSv4-Flash's canonical config
+            # is 8 nodes (PP8); on 4 nodes (PP4) each node holds 2x the layers, so the fp32 optimizer
+            # CPU-offload alone is ~1160GB/node (~77% of 1.5TB). This is a two-sided squeeze:
+            #  * HOST: full offload (offload-fraction 1.0) + the rollout weight-park push host to 95%
+            #    -> OOM at the step0->step1 transition. (bf16 Adam moments do NOT help: cpu-offload
+            #    keeps its host buffers fp32 regardless of --exp-avg-dtype.) Fix: partial offload
+            #    (keep some optimizer state on GPU) + --no-offload-train (keep Megatron weights on GPU
+            #    during rollout instead of parking to host).
+            #  * GPU: but pushing too much back onto the GPU makes rollout VRAM ~99% (only ~3GB free),
+            #    and the update_weights weight-sync transient then crashes an sglang engine (CUDA
+            #    coredump -> ConnectionError). offload-fraction 0.66 hit this; 0.75 leaves ~16GB GPU
+            #    margin (host -> ~79%) and passes multiple steps cleanly.
+            # Net balance point: offload-fraction 0.75 + --no-offload-train, paired with
             # --sglang-mem-fraction-static 0.6 (see relaunch script) so the on-GPU optimizer slice
-            # fits beside sglang during rollout.
-            optimizer_args += "--optimizer-offload-fraction 0.66 " "--no-offload-train "
+            # fits beside sglang during rollout. Verified: stable across steps, all fp32.
+            optimizer_args += "--optimizer-offload-fraction 0.75 " "--no-offload-train "
 
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         sglang_world_size = 32
