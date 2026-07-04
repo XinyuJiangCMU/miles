@@ -155,6 +155,20 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
 
+# ================================ Triton 3.7 (AMD ROCm-native) =================================
+# DSA paged-MQA "preshuffle" decode needs Triton>=3.6; base image ships 3.4. Install AMD's native
+# matched pair (same git hash) — no torch touch; generic triton-kernels 1.0.0 breaks on 3.6+.
+ARG TRITON_VER=3.7.0+amd.rocm7.0.0.gitd0d77a509
+ARG TRITON_KERNELS_VER=1.0.0+amd.rocm7.0.0.gitd0d77a509
+RUN pip install --extra-index-url https://pypi.amd.com/triton/release_/rocm-7.0.0/simple/ \
+      "triton==${TRITON_VER}" "triton-kernels==${TRITON_KERNELS_VER}"
+
+# torch inductor reads triton KernelMetadata.{num_ctas,cluster_dims} (CUDA-only, dropped in 3.6+); default via getattr.
+COPY docker/amd_patch/latest/torch_inductor_triton37.patch /tmp/amd_patch/torch_inductor_triton37.patch
+RUN cd "$(python -c 'import torch,os;print(os.path.dirname(torch.__file__))')" && \
+    git apply -v /tmp/amd_patch/torch_inductor_triton37.patch && \
+    python -c "import triton; print('Triton', triton.__version__, '+ inductor cluster_dims patch: OK')"
+
 # ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
@@ -182,10 +196,8 @@ ENV SGLANG_HACK_FLASHMLA_BACKEND=triton
 ENV SGLANG_OPT_FP8_WO_A_GEMM=false
 ENV SGLANG_OPT_USE_JIT_INDEXER_METADATA=false
 ENV SGLANG_OPT_USE_TOPK_V2=false
-# E20: aiter paged-MQA-logits on ROCm needs triton>=3.6 (AOT gluon; container has 3.4, compiles to
-# `CDNA_VERSION not in list`) and the legacy path asserts KVBlockSize==1 vs DSv4 page_size. So route
-# the indexer through the torch fp8_paged_mqa_logits_torch fn (with FP8_PAGED_MQA_LOGITS_TORCH=1
-# below); the sglang fork carries the 3 fixes that make that path run end-to-end.
+# E20: aiter paged-MQA-logits needs triton>=3.6 (now installed above, fast path AVAILABLE). ENVs kept
+# at conservative torch-fallback default; flipped to fast aiter path at runtime by launch env (R1).
 ENV SGLANG_OPT_USE_AITER_INDEXER=false
 ENV SGLANG_OPT_USE_TILELANG_INDEXER=false
 ENV SGLANG_OPT_USE_TILELANG_MHC_PRE=false
