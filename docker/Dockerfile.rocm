@@ -169,7 +169,7 @@ RUN pip install --extra-index-url https://pypi.amd.com/triton/release_/rocm-7.0.
 COPY docker/amd_patch/latest/torch_inductor_triton37.patch /tmp/amd_patch/torch_inductor_triton37.patch
 RUN cd "$(python -c 'import torch,os;print(os.path.dirname(torch.__file__))')" && \
     git apply -v /tmp/amd_patch/torch_inductor_triton37.patch && \
-    python -c "import triton; print('Triton', triton.__version__, '+ inductor cluster_dims patch: OK')"
+    cd / && python -c "import triton; print('Triton', triton.__version__, '+ inductor cluster_dims patch: OK')"
 
 # ====================================== Runtime knobs ==========================================
 
