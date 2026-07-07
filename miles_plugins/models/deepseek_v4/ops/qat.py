@@ -1,32 +1,21 @@
 import torch
 
+# TODO(ROCm): tile_kernels is CUDA-only here (not in Dockerfile.rocm; even pip-installed it
+# needs tilelang v0.1.8, which the base image ships as 0.1.7.post3) -> import fails on gfx950.
+# The cast-back must stay a kernel, NOT a pure-PyTorch dequant. Two fixes:
+#   1. make tile_kernels usable on ROCm (bump base tilelang to v0.1.8), or
+#   2. in-tree Triton per_token_cast_back on the ROCm path, keep this import for NV (two paths).
+from tile_kernels.quant import per_token_cast_back
+
 from .kernel.act_quant import act_quant
-
-
-def per_token_cast_back(x_fp8_and_scale, out_dtype: str, block_size: int) -> torch.Tensor:
-    """Block-wise FP8 dequantization (portable torch replacement).
-
-    Originally ``tile_kernels.quant.per_token_cast_back`` (CUDA-only). Given the
-    FP8 values ``y`` (M, N) and the per-block scales ``scale`` (M, N//block_size),
-    reconstruct ``out[m, n] = float(y[m, n]) * scale[m, n // block_size]``.
-
-    ``out_dtype`` is "bf16" or "fp32".
-    """
-    y, scale = x_fp8_and_scale
-    M, N = y.shape
-    n_blocks = N // block_size
-    out = y.to(torch.float32).view(M, n_blocks, block_size) * scale.to(torch.float32).view(
-        M, n_blocks, 1
-    )
-    out = out.view(M, N)
-    return out.to(torch.bfloat16 if out_dtype == "bf16" else torch.float32)
 
 
 def fp8_simulate(x: torch.Tensor, block_size: int):
     """Simulate per-token FP8 (E4M3) cast + dequant with UE8M0 scaling.
 
-    The cast (via :func:`act_quant`) runs through the in-tree TileLang kernel;
-    the cast-back step is a portable torch block-wise dequant.
+    Both the cast (via :func:`act_quant`) and the cast-back step are routed
+    through ``deepseek-ai/TileKernels`` so we share the same FP8 kernels with
+    the rest of the DeepSeek stack.
     """
     x_c = x.contiguous()
     y, scale = act_quant(x_c, block_size, "ue8m0")
