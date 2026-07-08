@@ -316,22 +316,39 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 
 为了让 AMD 改动可维护、可上游,把 DSv4 的 AMD-specific kernel 从 NV 主线**物理隔离**到 `miles_plugins/amd/models/deepseek_v4/`(路径镜像主线 `models/deepseek_v4`)。原则:每个 op 只在**一个 import 处按 `torch.version.hip` 分叉**,主线 call-site 不留 if-hip;NV 路径(外部 `tile_kernels` / torch)字节不变;不碰 Miles Core(sync/wait/update + Ray 编排)。以后不要 AMD 支持,删掉这个文件夹 + 几处 import 分叉即可回退。
 
-**五个 AMD 文件各替什么:**
+**三个 AMD 文件各替什么(全是 ROCm 硬约束、非跑不可的替换;perf-only 的 Liger 版已回退,见下节):**
 
 | AMD 文件(`amd/models/deepseek_v4/`)| 替 NV 的什么 | 分叉在哪个主线文件 |
 |---|---|---|
-| `cast_back.py` | 外部 `tile_kernels.quant.per_token_cast_back`(FP8 反量化,CUDA-only)→ Triton 重写 | `ops/qat.py` |
-| `mhc.py` | 外部 `tile_kernels.modeling.mhc.ops`(7 个 mHC op,CUDA-only)→ torch drop-in | `ops/hyper_connection.py` |
-| `rmsnorm.py` | `deepseek_v4.py` 里内联 torch q-RMSNorm → Liger triton | `deepseek_v4.py` |
-| `ce.py` | `math_utils.py` 里 torch CE log-prob → Liger triton | `loss_hub/math_utils.py` |
+| `cast_back.py` | 外部 `tile_kernels.quant.per_token_cast_back`(FP8 反量化,CUDA-only 编不了)→ Triton 重写 | `ops/qat.py` |
+| `mhc.py` | 外部 `tile_kernels.modeling.mhc.ops`(7 个 mHC op,CUDA-only 编不了)→ torch drop-in(fwd+bwd 全 torch,已回退 Liger 加速层) | `ops/hyper_connection.py` |
 | `precision_aligned_ops.py` | `ops/kernel/precision_aligned_ops.py` 的 `linear_bf16_fp32`(compressor parity):hipblas 不支持 bf16-in/fp32-out gemm → 纯 fp32 matmul。**整份手动 mirror**,仅 forward 差一行,backward 是 NV 逐行拷贝、parity-critical,NV 改 backward 时要手动同步 | `ops/compressor.py` |
+
+**判据**:留下的 3 个都是"NV 走的路 ROCm 根本跑不了"(tile_kernels CUDA-only 编不过 / hipblas 无此 gemm),**必须**有 AMD 版。反之下面回退的都是"NV torch 版 ROCm 本来就能跑,Liger 只是加速",为 PR 干净先不加。
+
+### perf-only Liger 已回退(为 V4 PR 保持最小 NV diff)
+
+**策略**:先提一个**对 NV 改动最小**的干净版 V4 PR(能不 diff NV 就不 diff)、跑通、提上去;**加速(Liger)后面单独做**。所以把"ROCm 不需要、只为提速"的 Liger 全部回退成 NV 一致的 torch —— 这样对应的 NV 主线文件直接变回 byte-for-byte 上游。
+
+**回退时的 commit(要还原 Liger 加速版,直接 `git show` 这些 commit 里对应文件即可,不用重写):**
+- `874ad32` `[AMD] DSv4: isolate AMD kernel impls into miles_plugins/amd/...` —— **Liger 版 `ce.py` / `rmsnorm.py` 全文 + mhc 的 `_USE_LIGER_MHC` 层**都在这个 commit 里(还原参考它)。
+
+| 回退项 | NV 现在走 | 回退后 NV 文件 diff | 曾经的 Liger 加速(还原参考) |
+|---|---|---|---|
+| **CE log-prob** | 内联 torch `log_softmax`+`gather` | `loss_hub/math_utils.py` → **0 diff(byte-for-byte 上游)** | `amd/.../ce.py` 用 `liger_cross_entropy`,省两次 `[R, V=129280]` 物化(no-entropy 快路);dispatch 曾在 `math_utils.py` 顶 |
+| **q-RMSNorm** | 内联 torch fp32 rsqrt | `deepseek_v4.py` → 仅剩无关的 `V4Indexer(layer_id=…)` | `amd/.../rmsnorm.py` 用 `liger_rms_norm`(gemma casting);dispatch 曾在 `deepseek_v4.py:46` |
+| **mHC 加速层** | torch drop-in(`mhc.py`,fwd+bwd 全 torch) | `hyper_connection.py` → 仅剩必需的 `tile_kernels` import 分叉 | `_USE_LIGER_MHC` + `liger_mhc_coeffs/pre/post_res`,在 `hc_pre_raw`/`hc_post_raw` 里(注意 `hc_post` 的 `comb.transpose` 修正,漏了 ~28% 端到端误差) |
+
+> **注**:mhc 的 **torch drop-in 本身不能回退**(tile_kernels CUDA-only,ROCm 必须有个非-tile_kernels 版);回退的只是叠在它上面的 Liger 加速层。cast_back / precision_aligned 同理不回退(硬约束)。
 
 **待办:**
 
-1. **【必做 / 高优先】在 NV 卡上和真 `tile_kernels` 对精度。** 当前 AMD 版只和数学参考对过(cast_back 的 `float(fp8)*scale` bit-exact;mhc 那 7 个函数是从 sglang tilelang 参考反推的;rmsnorm/ce 换了 Liger),**都没和真 `tile_kernels` 比过**(它需要 tilelang≥0.1.9,gfx950 上撞 ROCm 7.0 的 fp8→float device-cast bug 编不过)。这是**正确性缺口**:要在 NV 机器上跑 `tile_kernels`([deepseek-ai/TileKernels](https://github.com/deepseek-ai/TileKernels),MIT)当 ground truth,逐 op 对 forward 输出 + backward 梯度(对 activation / 对 weight 两方向)。leadership 明确要的"逐项跑测精度",卡在没 NV 机器。
-2. **【低优先,TODO 1 之后】把替 `tile_kernels` 的两处归一个子包。** 只涉及**真正替 `tile_kernels` 的两处** —— `cast_back`(quant)+ `mhc`(7 个 op);`rmsnorm`/`ce` 替的是主线内联 torch、走 Liger,**不属于这个包**。做法不是"重写整个 tile_kernels 库",而是把已有的 `cast_back.py`+`mhc.py` 归到一个统一入口(如 `tile_kernels_amd`),让 AMD 侧 `from tile_kernels_amd import ...` 与 NV 的 `from tile_kernels import ...` 结构对称、一处维护。纯组织性优化,不改功能,等 TODO 1 验证过再做。
+0. **【提速阶段做】把回退掉的 Liger 加速改回来 + 给 NV 提 PR/issue。** (a) 本地还原:参照上表 commit `874ad32` 把 `ce.py`/`rmsnorm.py`/mhc-Liger 层放回 + 主线 import 分叉。(b) **给上游 NV 提 PR/issue**:CE log-prob 和 q-RMSNorm 用 Liger 能省显存/提速(CE 省两次 `[R,V]` 物化),NV 侧也受益 —— 这本就该是上游改进,不是 AMD 私有。提了 NV 收了,AMD 就不用维护这份分叉。
+
+1. **【必做 / 高优先】在 NV 卡上和真 `tile_kernels` 对精度。** 当前 AMD 版只和数学参考对过(cast_back 的 `float(fp8)*scale` bit-exact;mhc 那 7 个 torch 函数是从 sglang tilelang 参考反推的),**都没和真 `tile_kernels` 比过**(它需要 tilelang≥0.1.9,gfx950 上撞 ROCm 7.0 的 fp8→float device-cast bug 编不过)。这是**正确性缺口**:要在 NV 机器上跑 `tile_kernels`([deepseek-ai/TileKernels](https://github.com/deepseek-ai/TileKernels),MIT)当 ground truth,逐 op 对 forward 输出 + backward 梯度(对 activation / 对 weight 两方向)。leadership 明确要的"逐项跑测精度",卡在没 NV 机器。
+2. **【低优先,TODO 1 之后】把替 `tile_kernels` 的两处(`cast_back` + `mhc`)归一个子包。** 做法不是"重写整个 tile_kernels 库",而是把已有的 `cast_back.py`+`mhc.py` 归到一个统一入口(如 `tile_kernels_amd`),让 AMD 侧 `from tile_kernels_amd import ...` 与 NV 的 `from tile_kernels import ...` 结构对称、一处维护。纯组织性优化,不改功能,等 TODO 1 验证过再做。
 3. **【未来时,等 AMD 真正重写 forward 级 kernel 再上】用 `--spec` + attention subclass 隔离 AMD 的 kernel 变体。** 机制:仿 `get_dsv4_spec`(deepseek_v4.py:353)做一个平行的 `get_dsv4_amd_spec`(放 `amd/models/deepseek_v4/deepseek_v4_amd.py`),返回 `ModuleSpec(module=DeepSeekV4AttentionAMD)`;`DeepSeekV4AttentionAMD(DeepSeekV4Attention)` **subclass 复用**共享模型逻辑,只 override 掉 kernel 调用;fork 发生在启动脚本选 `--spec`(NV 脚本用原 spec,AMD 脚本用 amd spec),**运行时零 if-hip**。共享类改动压到最小:把要换的 kernel 调用(如 forward:319 的 `sparse_attn_tilelang(...)`)抽成一个几行的 hook 方法(additive、可上游),AMD 子类只 override 这个 hook → 零重复、零散 if-hip。
-   - **为什么现在不做**:当前 5 处分叉里,**4 处是 import-time gate**(`qat.py` cast_back / `compressor.py` linear_bf16_fp32 是 load-bearing —— subclass 为继承而 import 共享类时就连锁触发 `from tile_kernels import`,ROCm 上 import 即崩,只有那个 `if hip` gate 拦着)**或外部 Megatron 构造的 mhc**(不在 attention spec 树里)。spec/subclass 是**运行时**、晚于 import,**碰不到这 4 处**;唯一够得着的是 `q_rmsnorm`(forward 运行时调用),而它下沉到一个小 ops 文件同样能让 deepseek_v4.py 零 if-hip,不需要这套机器。→ 为消 1 处 fork 建整条平行入口不划算。
+   - **为什么现在不做**:回退 perf-Liger 后只剩 **3 处分叉,且全是 import-time gate**:`qat.py` cast_back / `compressor.py` precision_aligned 是 load-bearing(subclass 为继承而 import 共享类时就连锁触发 `from tile_kernels import` / hipblas gemm,ROCm 上 import 即崩,只有那个 `if hip` gate 拦着);`hyper_connection.py` mhc 还是外部 Megatron 构造(不在 attention spec 树里)。spec/subclass 是**运行时**、晚于 import,**这 3 处一个都碰不到**(q_rmsnorm/ce 那种 forward 运行时调用已全部回退成 NV torch,不再有分叉)。→ 现在建平行入口纯属零收益。
    - **什么时候值得做**:当 AMD 开始有**整份不同的 forward 级大 kernel**要换(Triton / FlyDSL 重写 sparse_attn / indexer,即 `amd/.../kernel/sparse_attn_amd.py` 这类)。那些是 forward 里的 kernel 调用、不是 import gate,subclass+hook 是最干净的 swap 点,且能一次容纳多个大 kernel,平行入口的成本才摊得平。
 
 ## 优化路线图(已完成实测 + 待办)
@@ -431,6 +448,8 @@ R1–R9 做完后 profile 当前 run(steady-decode profiler、wandb `perf/*`、r
 | **E26** | compressor wkv `torch.mm(bf16,bf16,out=fp32)` ROCm hipblas 不支持 | hipblas 无 bf16-in/fp32-out 路径 | `_BFloat16LinearFP32Func` 加 hip guard 用 fp32 matmul(数值 ≥ bf16-in/fp32-accum) |
 
 > E12/E13/E14/E18/E19/E20 那批 env 已固化进 `docker/Dockerfile.rocm`(rollout env 段)+ 训练脚本 `scripts/amd/run-deepseek-v4-flash-fp8-4layer-amd.sh`,不用手 export。
+>
+> ⚠️ **启动务必走 `scripts/amd/run-deepseek-v4-flash-fp8-4layer-amd.sh`,不能裸跑 `python scripts/run_deepseek_v4.py full-train …`**。ROCm 关键 env(`RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES`、`SGLANG_USE_AITER`、`SGLANG_HACK_FLASHMLA_BACKEND=triton`、`SGLANG_FP8_PAGED_MQA_LOGITS_TORCH=1`、`SGLANG_DSA_TOPK_BROADCAST=1`、AITER config pin 等)**只在这个 `.sh` 里 export、不在镜像**。裸跑漏掉 → sglang rollout 侧 `fp8_paged_mqa_logits_torch` 崩 `assert seq_lens.shape == (batch_size,)`(`sglang/srt/layers/attention/dsv4/indexer.py:69`);其中 `SGLANG_DSA_TOPK_BROADCAST=1` 见上文「attn_tp=4 下开 indexer」一节。(2026-07-08 实测:`docker exec` 里裸跑必踩,换回 `.sh` 即过。)
 
 **bring-up 阶段显式不做**(防在 toy 上空转):不追 4-layer 收敛 / loss 下降 / eval 准确率(模型未训练,eval 无意义);ue8m0 vs fp32 scale 属 recipe 差异,先归因 recipe 再归因 kernel,别死磕修不存在的 bug。
 

@@ -11,20 +11,6 @@ import torch.nn.functional as F
 from miles.backends.training_utils.cp_utils import slice_loss_masks_for_local_cp
 from miles.backends.training_utils.parallel import get_parallel_state
 
-def ce_log_prob(full_logits, tokens, with_entropy, dump_fn):
-    log_probs_full = torch.log_softmax(full_logits, dim=-1)
-    dump_fn("log_probs_full", log_probs_full)
-    log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
-    return log_prob, log_probs_full
-
-
-# ROCm overrides ce_log_prob with the in-tree AMD Liger kernel (miles_plugins/amd/models/deepseek_v4).
-if torch.version.hip is not None:
-    try:
-        from miles_plugins.amd.models.deepseek_v4.ce import ce_log_prob  # noqa: F811
-    except Exception:
-        pass
-
 
 def compute_ess_ratio_contribution(
     ppo_kl: torch.Tensor,
@@ -948,12 +934,14 @@ def _calculate_log_probs_and_entropy_true_on_policy(
 
     full_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
     _maybe_dump_top_logprob_backward("full_logits", full_logits)
+    log_probs_full = torch.log_softmax(full_logits, dim=-1)
+    _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
+    log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
+    _maybe_dump_top_logprob_backward("log_prob", log_prob)
 
     entropy = None
-    log_prob, log_probs_full = ce_log_prob(full_logits, tokens, with_entropy, _maybe_dump_top_logprob_backward)
     if with_entropy:
         probs = log_probs_full.exp()
         entropy = -(probs * log_probs_full).sum(dim=-1)
-    _maybe_dump_top_logprob_backward("log_prob", log_prob)
 
     return log_prob, entropy

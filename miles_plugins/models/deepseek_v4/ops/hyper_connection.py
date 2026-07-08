@@ -7,8 +7,7 @@ the Megatron-LM patch (radixark/Megatron-LM PR #28) call sites in
 The mHC ops (``mhc_pre*`` / ``mhc_post`` / ``sinkhorn_normalize`` / ``mhc_head*``)
 are imported from ``tile_kernels.modeling.mhc`` on CUDA; on ROCm (gfx950, which has
 no tile_kernels) they are dispatched to the in-tree torch reimplementation in
-``miles_plugins/amd/models/deepseek_v4/mhc`` (drop-in, same names/signatures). On ROCm the
-hot fwd+bwd path is further accelerated through Liger's triton fused kernels.
+``miles_plugins/amd/models/deepseek_v4/mhc`` (drop-in, same names/signatures).
 """
 
 import einops
@@ -44,20 +43,6 @@ else:
 # DeepSeek V4 originally used post = 2 * sigmoid(...) for the post-layer mix
 # (see the legacy ``hc_split_sinkhorn`` kernel), passed through ``post_mult_value``.
 _HC_POST_MULT_VALUE = 2.0
-
-# ROCm: further accelerate the mHC fwd+bwd through Liger's triton fused kernels
-# (tile_kernels' tilelang mhc is forward-only + hits a missing HIP op). NV keeps
-# the torch/tile_kernels path byte-for-byte.
-_USE_LIGER_MHC = torch.version.hip is not None
-if _USE_LIGER_MHC:
-    try:
-        from liger_kernel.transformers.functional import (
-            liger_mhc_coeffs,
-            liger_mhc_pre,
-            liger_mhc_post_res,
-        )
-    except Exception:
-        _USE_LIGER_MHC = False
 
 
 class HCHeadParams(MegatronModule):
@@ -100,32 +85,13 @@ class DeepSeekV4HyperConnectionUtil:
         dtype = x.dtype
         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
 
-        if _USE_LIGER_MHC:
-            # Liger triton fused coeffs (sinkhorn + pre/post/comb) + pre-apply.
-            # phi is the transpose of DSv4 fn ([M,K] -> [K,M]); eps defaults in
-            # Liger differ from DSv4 so pre_eps/sinkhorn_eps/rms_eps are forced.
-            phi = hc_fn.t().contiguous()
-            h_pre, post, comb = liger_mhc_coeffs(
-                x_bf16,
-                phi,
-                hc_base,
-                hc_scale[0],
-                hc_scale[1],
-                hc_scale[2],
-                allow_fp32=False,
-                tmax=self.hc_sinkhorn_iters,
-                rms_eps=self.norm_eps,
-                pre_eps=self.hc_eps,
-                sinkhorn_eps=self.hc_eps,
-                post_mult=_HC_POST_MULT_VALUE,
-            )
-            layer_input = liger_mhc_pre(x_bf16, h_pre)
-            # Keep post as Liger's native (..., hc); do NOT unsqueeze to (..., hc, 1).
-            # LigerMHCPostResFunction.backward returns the post gradient as (..., hc),
-            # so unsqueezing makes autograd reject it at the train step (invalid
-            # gradient [., hc] vs expected [., hc, 1]). hc_post_raw feeds post
-            # straight into liger_mhc_post_res, which wants (..., hc) anyway.
-        elif not torch.is_grad_enabled():
+        # Inline ``tile_kernels.modeling.mhc.functional.mhc_pre`` so we can
+        # pass ``fuse_grad_acc=False`` to ``mhc_pre_norm_fn``. The default
+        # ``fuse_grad_acc=True`` path requires ``mhc_post`` to have written
+        # ``grad_from_mhc_post`` onto the same residual storage during
+        # backward — but Megatron's call sites use independent ``layer_pre``/
+        # ``layer_post`` rearranges, so the storage objects don't match.
+        if not torch.is_grad_enabled():
             post, comb, layer_input = mhc_pre_big_fuse(
                 x_bf16,
                 hc_fn,
@@ -169,15 +135,7 @@ class DeepSeekV4HyperConnectionUtil:
         dtype = x.dtype
         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
         res_bf16 = (residual if residual.dtype == torch.bfloat16 else residual.bfloat16()).contiguous()
-        if _USE_LIGER_MHC:
-            # comb must be transposed: DSv4 sums comb over dim-2, Liger over dim-1
-            # (h_res == comb elementwise but opposite reduction axis). Skipping the
-            # transpose silently corrupts the output (~28% end-to-end error).
-            out = liger_mhc_post_res(
-                res_bf16, x_bf16, post, comb.transpose(-1, -2).contiguous()
-            )
-        else:
-            out = mhc_post(x_bf16, res_bf16, post, comb)
+        out = mhc_post(x_bf16, res_bf16, post, comb)
         return out.to(dtype)
 
     def hc_head_raw(

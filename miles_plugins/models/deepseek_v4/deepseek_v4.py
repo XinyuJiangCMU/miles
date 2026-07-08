@@ -37,18 +37,6 @@ from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
 
-def q_rmsnorm(q, eps):
-    q_fp32 = q.float()
-    return (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + eps)).to(q.dtype)
-
-
-# ROCm overrides q_rmsnorm with the in-tree AMD Liger kernel (miles_plugins/amd/models/deepseek_v4).
-if torch.version.hip is not None:
-    try:
-        from miles_plugins.amd.models.deepseek_v4.rmsnorm import q_rmsnorm  # noqa: F811
-    except Exception:
-        pass
-
 
 def _enable_deepseek_v4_tf32():
     # Match TileKernels MHC TF32 GEMM precision for DSV4 fp32 matmuls.
@@ -254,7 +242,8 @@ class DeepSeekV4Attention(MegatronModule):
         qr = q = self.q_norm(q_after_wq_a)
         q_after_wq_b = self.wq_b(q)[0]
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
-        q = q_rmsnorm(q, self.eps)
+        q_fp32 = q.float()
+        q = (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + self.eps)).to(q.dtype)
         q = q.clone()
         apply_rotary_emb(q[..., -rd:], freqs_cis)
 
