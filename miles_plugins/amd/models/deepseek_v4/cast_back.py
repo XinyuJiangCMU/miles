@@ -6,6 +6,10 @@ used by DSv4 QAT (``ops/qat.py``). Same fp8-load idiom as the in-tree
 
 ``scale`` carries one fp32 value per (row, column-block of width ``block_size``):
     out[m, n] = float(y[m, n]) * scale[m, n // block_size].
+
+TODO (see docs/DSV4_FLASH_ROCM_JOURNEY.md, AMD-kernel-isolation TODO 2): fold this into a
+fork of deepseek-ai/TileKernels (replace the CUDA-only kernel with this triton one, pip
+install the fork on ROCm). Then qat.py drops its import fork and this file goes away.
 """
 
 import torch
