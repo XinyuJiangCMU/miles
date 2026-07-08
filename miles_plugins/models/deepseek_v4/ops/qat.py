@@ -1,11 +1,13 @@
 import torch
 
-# TODO(ROCm): tile_kernels is CUDA-only here (not in Dockerfile.rocm; even pip-installed it
-# needs tilelang v0.1.8, which the base image ships as 0.1.7.post3) -> import fails on gfx950.
-# The cast-back must stay a kernel, NOT a pure-PyTorch dequant. Two fixes:
-#   1. make tile_kernels usable on ROCm (bump base tilelang to v0.1.8), or
-#   2. in-tree Triton per_token_cast_back on the ROCm path, keep this import for NV (two paths).
-from tile_kernels.quant import per_token_cast_back
+# per_token_cast_back: tile_kernels (deepseek-ai/TileKernels) is CUDA-only, so on ROCm use the
+# in-tree Triton dequant instead (cross-platform, same float(fp8) * scale math as
+# tools/fp8_cast_bf16.py). NV (torch.version.hip is None) keeps tile_kernels byte-for-byte.
+# Same platform-gate idiom as hyper_connection.py.
+if torch.version.hip is not None:
+    from .kernel.cast_back import per_token_cast_back
+else:
+    from tile_kernels.quant import per_token_cast_back
 
 from .kernel.act_quant import act_quant
 
@@ -13,9 +15,9 @@ from .kernel.act_quant import act_quant
 def fp8_simulate(x: torch.Tensor, block_size: int):
     """Simulate per-token FP8 (E4M3) cast + dequant with UE8M0 scaling.
 
-    Both the cast (via :func:`act_quant`) and the cast-back step are routed
-    through ``deepseek-ai/TileKernels`` so we share the same FP8 kernels with
-    the rest of the DeepSeek stack.
+    The cast runs through the in-tree TileLang :func:`act_quant`. The cast-back uses
+    ``deepseek-ai/TileKernels`` on CUDA and the in-tree Triton ``per_token_cast_back``
+    on ROCm (selected by the platform gate above).
     """
     x_c = x.contiguous()
     y, scale = act_quant(x_c, block_size, "ue8m0")
