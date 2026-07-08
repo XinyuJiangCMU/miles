@@ -101,6 +101,13 @@ RUN pip install flash-linear-attention==0.4.2
 # by torch.version.hip, so NV is unaffected. See ops/hyper_connection.py.
 RUN pip install liger-kernel==0.8.0
 
+# lazy-import to skip the missing-enum crash. Details.
+RUN pip install --no-deps tile_kernels==1.0.0 && \
+    TK=/opt/venv/lib/python3.10/site-packages/tile_kernels && \
+    sed -i '/^import tilelang$/d; /^from \. import ($/,/^)$/d' "$TK/__init__.py" && \
+    sed -i '/^from \. import engram$/d; /^from \. import mhc$/d' "$TK/modeling/__init__.py" && \
+    sed -i '/T\.pdl_sync()/d' "$TK/mhc/post_kernel.py"
+
 RUN rm -rf /root/Megatron-LM && \
     git clone --recursive -b ${MEGATRON_BRANCH} https://github.com/${MEGATRON_REPO}.git /root/Megatron-LM && \
     cd /root/Megatron-LM && \

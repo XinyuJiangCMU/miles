@@ -4,10 +4,12 @@ Public API (`HCHeadParams`, `DeepSeekV4HyperConnectionUtil`) preserved so that
 the Megatron-LM patch (radixark/Megatron-LM PR #28) call sites in
 ``transformer_layer.py`` and ``transformer_block.py`` keep working.
 
-The mHC ops (``mhc_pre*`` / ``mhc_post`` / ``sinkhorn_normalize`` / ``mhc_head*``)
-are imported from ``tile_kernels.modeling.mhc`` on CUDA; on ROCm (gfx950, which has
-no tile_kernels) they are dispatched to the in-tree torch reimplementation in
-``miles_plugins/amd/models/deepseek_v4/mhc`` (drop-in, same names/signatures).
+The mHC ops (``mhc_pre*`` / ``mhc_post`` / ``sinkhorn_normalize`` / ``mhc_head*``) come from
+``tile_kernels.modeling.mhc`` on both CUDA and ROCm -- on ROCm they JIT-compile as real TileLang
+HIP kernels on gfx950 (verified 2026-07-08), so there is no platform fork here. The ROCm image
+strips two CUDA-only bits from tile_kernels at build time (see docker/Dockerfile.rocm): the
+engram eager-import (unused submodule, missing-enum crash) and mhc_post's ``T.pdl_sync()`` (PDL /
+grid-sync is a Hopper launch optimization, no-op math, unsupported on ROCm).
 """
 
 import einops
@@ -17,28 +19,15 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-# mHC ops: CUDA -> tile_kernels; ROCm -> in-tree torch reimplementation (amd/models/deepseek_v4/mhc),
-# a drop-in with identical names/signatures so the call sites below are platform-agnostic.
-if torch.version.hip is not None:
-    from miles_plugins.amd.models.deepseek_v4.mhc import (
-        mhc_head_compute_mix,
-        mhc_post,
-        mhc_pre_apply_mix,
-        mhc_pre_big_fuse,
-        mhc_pre_norm_fn,
-        mhc_pre_split_mixes,
-        sinkhorn_normalize,
-    )
-else:
-    from tile_kernels.modeling.mhc.ops import (
-        mhc_head_compute_mix,
-        mhc_post,
-        mhc_pre_apply_mix,
-        mhc_pre_big_fuse,
-        mhc_pre_norm_fn,
-        mhc_pre_split_mixes,
-        sinkhorn_normalize,
-    )
+from tile_kernels.modeling.mhc.ops import (
+    mhc_head_compute_mix,
+    mhc_post,
+    mhc_pre_apply_mix,
+    mhc_pre_big_fuse,
+    mhc_pre_norm_fn,
+    mhc_pre_split_mixes,
+    sinkhorn_normalize,
+)
 
 # DeepSeek V4 originally used post = 2 * sigmoid(...) for the post-layer mix
 # (see the legacy ``hc_split_sinkhorn`` kernel), passed through ``post_mult_value``.
