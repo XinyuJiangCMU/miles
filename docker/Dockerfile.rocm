@@ -172,11 +172,12 @@ ARG TRITON_KERNELS_VER=1.0.0+amd.rocm7.0.0.gitd0d77a509
 RUN pip install --extra-index-url https://pypi.amd.com/triton/release_/rocm-7.0.0/simple/ \
       "triton==${TRITON_VER}" "triton-kernels==${TRITON_KERNELS_VER}"
 
-# torch inductor reads triton KernelMetadata.{num_ctas,cluster_dims} (CUDA-only, dropped in 3.6+); default via getattr.
-COPY docker/amd_patch/latest/torch_inductor_triton37.patch /tmp/amd_patch/torch_inductor_triton37.patch
-RUN cd "$(python -c 'import torch,os;print(os.path.dirname(torch.__file__))')" && \
-    git apply -v /tmp/amd_patch/torch_inductor_triton37.patch && \
-    cd / && python -c "import triton; print('Triton', triton.__version__, '+ inductor cluster_dims patch: OK')"
+# torch inductor reads triton KernelMetadata.{num_ctas,cluster_dims} (CUDA-only, dropped in triton 3.6+);
+# default them via getattr so inductor runs on our triton 3.7.
+# TODO: delete once the sgl-dev base ships triton >=3.6 with a matching torch (inductor no longer
+# hard-reads num_ctas/cluster_dims) -- e.g. when we move to a rocm7.2 base.
+RUN F="$(python -c 'import torch,os;print(os.path.dirname(torch.__file__))')/_inductor/runtime/triton_heuristics.py" && \
+    sed -i 's#(binary\.metadata\.num_ctas, \*binary\.metadata\.cluster_dims)#(getattr(binary.metadata, "num_ctas", 1), *getattr(binary.metadata, "cluster_dims", ()))#' "$F"
 
 # ====================================== Runtime knobs ==========================================
 

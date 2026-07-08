@@ -320,7 +320,7 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 
 | AMD 文件(`amd/models/deepseek_v4/`)| 替 NV 的什么 | 分叉在哪个主线文件 |
 |---|---|---|
-| `cast_back.py` | 外部 `tile_kernels.quant.per_token_cast_back`(FP8 反量化,CUDA-only 编不了)→ Triton 重写 | `ops/qat.py` |
+| `cast_back.py` | 外部 `tile_kernels.quant.per_token_cast_back`(FP8 反量化)→ Triton 重写。tile_kernels 的 TileLang cast-back 在 gfx950 **编不了**:撞 tilelang `tl_templates/hip/hip_fp8.h:85` 的 `static_cast<float>` → 挑中 ROCm `amd_hip_fp8.h` 的 host-only `operator float`(1136),在 device kernel 里报 `reference to __host__ function ... in __device__ function`。**ROCm 7.0 和 7.2 都撞**(2026-07-08 在 7.0 / 7.2 两个 base 实测,字节相同的 a55a8230 tilelang 全失败)。Triton 版走 Triton 后端、绕开 tilelang 的 hip fp8 wrapper,故能编。**删除条件:tilelang 修了 `hip_fp8.h:85` 的 static_cast(与 ROCm 版本无关);不是"等 7.2"。** | `ops/qat.py` |
 | `mhc.py` | 外部 `tile_kernels.modeling.mhc.ops`(7 个 mHC op,CUDA-only 编不了)→ torch drop-in(fwd+bwd 全 torch,已回退 Liger 加速层) | `ops/hyper_connection.py` |
 | `precision_aligned_ops.py` | `ops/kernel/precision_aligned_ops.py` 的 `linear_bf16_fp32`(compressor parity):hipblas 不支持 bf16-in/fp32-out gemm → 纯 fp32 matmul。**整份手动 mirror**,仅 forward 差一行,backward 是 NV 逐行拷贝、parity-critical,NV 改 backward 时要手动同步 | `ops/compressor.py` |
 
