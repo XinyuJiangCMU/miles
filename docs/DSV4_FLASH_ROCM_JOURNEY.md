@@ -316,15 +316,15 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 
 为了让 AMD 改动可维护、可上游,把 DSv4 的 AMD-specific kernel 从 NV 主线**物理隔离**到 `miles_plugins/amd/models/deepseek_v4/`(路径镜像主线 `models/deepseek_v4`)。原则:每个 op 只在**一个 import 处按 `torch.version.hip` 分叉**,主线 call-site 不留 if-hip;NV 路径(外部 `tile_kernels` / torch)字节不变;不碰 Miles Core(sync/wait/update + Ray 编排)。以后不要 AMD 支持,删掉这个文件夹 + 几处 import 分叉即可回退。
 
-**三个 AMD 文件各替什么(全是 ROCm 硬约束、非跑不可的替换;perf-only 的 Liger 版已回退,见下节):**
+**现在只剩一个 AMD 文件**(`precision_aligned_ops.py`)。`mhc` 和 `cast_back` 曾经也在这里(tile_kernels CUDA-only,gfx950 编不了),但 2026-07-08 靠 `Dockerfile.rocm` 里对 tilelang / tile_kernels 打的几条 sed(见下节「用真 tile_kernels」),两者都回归了**真 `tile_kernels`**、两平台同一条 import(无 if-hip 分叉),AMD 的 torch/Triton 重写已删除:
 
 | AMD 文件(`amd/models/deepseek_v4/`)| 替 NV 的什么 | 分叉在哪个主线文件 |
 |---|---|---|
-| `cast_back.py` | 外部 `tile_kernels.quant.per_token_cast_back`(FP8 反量化)→ Triton 重写。tile_kernels 的 TileLang cast-back 在 gfx950 **编不了**:撞 tilelang `tl_templates/hip/hip_fp8.h:85` 的 `static_cast<float>` → 挑中 ROCm `amd_hip_fp8.h` 的 host-only `operator float`(1136),在 device kernel 里报 `reference to __host__ function ... in __device__ function`。**ROCm 7.0 和 7.2 都撞**(2026-07-08 在 7.0 / 7.2 两个 base 实测,字节相同的 a55a8230 tilelang 全失败)。Triton 版走 Triton 后端、绕开 tilelang 的 hip fp8 wrapper,故能编。**删除条件:tilelang 修了 `hip_fp8.h:85` 的 static_cast(与 ROCm 版本无关);不是"等 7.2"。** | `ops/qat.py` |
-| `mhc.py` | 外部 `tile_kernels.modeling.mhc.ops`(7 个 mHC op,CUDA-only 编不了)→ torch drop-in(fwd+bwd 全 torch,已回退 Liger 加速层) | `ops/hyper_connection.py` |
 | `precision_aligned_ops.py` | `ops/kernel/precision_aligned_ops.py` 的 `linear_bf16_fp32`(compressor parity):hipblas 不支持 bf16-in/fp32-out gemm → 纯 fp32 matmul。**整份手动 mirror**,仅 forward 差一行,backward 是 NV 逐行拷贝、parity-critical,NV 改 backward 时要手动同步 | `ops/compressor.py` |
 
-**判据**:留下的 3 个都是"NV 走的路 ROCm 根本跑不了"(tile_kernels CUDA-only 编不过 / hipblas 无此 gemm),**必须**有 AMD 版。反之下面回退的都是"NV torch 版 ROCm 本来就能跑,Liger 只是加速",为 PR 干净先不加。
+**判据**:`precision_aligned` 是唯一"NV 走的路 ROCm 根本跑不了"(hipblas 无 bf16-in/fp32-out gemm)、**必须**有 AMD 版的。`mhc`/`cast_back` 之前被判为同类(tile_kernels 编不过),但 gfx950 的 fp8→float 编译问题用 tilelang `hip_fp8.h` sed 修好后,两者都能用真 tile_kernels 了 —— 详见下节。反之下面回退的都是"NV torch 版 ROCm 本来就能跑,Liger 只是加速",为 PR 干净先不加。
+
+**已删除的 AMD 文件(还原参考)**:`mhc.py`(commit `ba1de29` 删,7 个 mHC op 的 torch drop-in)、`cast_back.py`(FP8 反量化 Triton 重写)。两者都被真 tile_kernels 取代;真要看当时的 AMD 实现,`git show ba1de29^:miles_plugins/amd/models/deepseek_v4/mhc.py` / 对应 cast_back commit 即可。
 
 ### perf-only Liger 已回退(为 V4 PR 保持最小 NV diff)
 
@@ -337,33 +337,39 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 |---|---|---|---|
 | **CE log-prob** | 内联 torch `log_softmax`+`gather` | `loss_hub/math_utils.py` → **0 diff(byte-for-byte 上游)** | `amd/.../ce.py` 用 `liger_cross_entropy`,省两次 `[R, V=129280]` 物化(no-entropy 快路);dispatch 曾在 `math_utils.py` 顶 |
 | **q-RMSNorm** | 内联 torch fp32 rsqrt | `deepseek_v4.py` → 仅剩无关的 `V4Indexer(layer_id=…)` | `amd/.../rmsnorm.py` 用 `liger_rms_norm`(gemma casting);dispatch 曾在 `deepseek_v4.py:46` |
-| **mHC 加速层** | torch drop-in(`mhc.py`,fwd+bwd 全 torch) | `hyper_connection.py` → 仅剩必需的 `tile_kernels` import 分叉 | `_USE_LIGER_MHC` + `liger_mhc_coeffs/pre/post_res`,在 `hc_pre_raw`/`hc_post_raw` 里(注意 `hc_post` 的 `comb.transpose` 修正,漏了 ~28% 端到端误差) |
+| **mHC 加速层** | 真 `tile_kernels.modeling.mhc.ops`(两平台同一 import) | `hyper_connection.py` → **0 分叉**(NV/ROCm 都 `import tile_kernels`) | `_USE_LIGER_MHC` + `liger_mhc_coeffs/pre/post_res`,在 `hc_pre_raw`/`hc_post_raw` 里(注意 `hc_post` 的 `comb.transpose` 修正,漏了 ~28% 端到端误差) |
 
-> **注**:mhc 的 **torch drop-in 本身不能回退**(tile_kernels CUDA-only,ROCm 必须有个非-tile_kernels 版);回退的只是叠在它上面的 Liger 加速层。cast_back / precision_aligned 同理不回退(硬约束)。
+> **注**:这里回退的只是 **perf-only 的 Liger 加速层**(CE / q-RMSNorm / mHC-Liger)。底座本身:`mhc` 和 `cast_back` 现在都走**真 tile_kernels**(靠 Dockerfile sed 在 gfx950 编译跑通,见下节),两平台同一 import、无分叉;`precision_aligned` 是唯一保留的 AMD 硬分叉(hipblas gemm 限制)。
 
 **待办:**
 
 0. **【提速阶段做】把回退掉的 Liger 加速改回来 + 给 NV 提 PR/issue。** (a) 本地还原:参照上表 commit `874ad32` 把 `ce.py`/`rmsnorm.py`/mhc-Liger 层放回 + 主线 import 分叉。(b) **给上游 NV 提 PR/issue**:CE log-prob 和 q-RMSNorm 用 Liger 能省显存/提速(CE 省两次 `[R,V]` 物化),NV 侧也受益 —— 这本就该是上游改进,不是 AMD 私有。提了 NV 收了,AMD 就不用维护这份分叉。
 
-1. **【必做 / 高优先】在 NV 卡上和真 `tile_kernels` 对精度。** 当前 AMD 版只和数学参考对过(cast_back 的 `float(fp8)*scale` bit-exact;mhc 那 7 个 torch 函数是从 sglang tilelang 参考反推的),**都没和真 `tile_kernels` 比过**(它需要 tilelang≥0.1.9,gfx950 上撞 ROCm 7.0 的 fp8→float device-cast bug 编不过)。这是**正确性缺口**:要在 NV 机器上跑 `tile_kernels`([deepseek-ai/TileKernels](https://github.com/deepseek-ai/TileKernels),MIT)当 ground truth,逐 op 对 forward 输出 + backward 梯度(对 activation / 对 weight 两方向)。leadership 明确要的"逐项跑测精度",卡在没 NV 机器。
-2. **用真 `tile_kernels` 的 mhc(不重写 kernel)—— 2026-07-08 在 gfx950/ROCm 7.0 端到端验证跑通。已落 `Dockerfile.rocm`。**
+1. **【很大程度已闭合;剩硬件级 parity】mhc / cast_back 现在 gfx950 上跑的**就是**真 `tile_kernels`**(和 NV 同一份 TileLang 源码,靠 hip_fp8.h sed 让它在 gfx950 编译),不再是 AMD 重写 —— 所以"AMD-reimpl vs tile_kernels"这个缺口已消失。cast_back 已在 gfx950 多形状 bit-exact vs `float(fp8)*scale`。**剩下的**只是同一 kernel 在 NV vs AMD 硬件上的数值差(MFMA/rounding),要彻底坐实仍建议在 NV 上把 mhc 7 op 的 fwd 输出 + bwd 梯度(对 activation / 对 weight)与 gfx950 逐 op 比一遍(leadership 要的"逐项跑测精度")。`precision_aligned` 仍是纯 AMD 实现,需和 NV cublas bf16/fp32 gemm 对。
+2. **用真 `tile_kernels` 的 mhc + cast_back(不重写 kernel)—— 2026-07-08 在 gfx950/ROCm 7.0 端到端验证跑通,已落 `Dockerfile.rocm`;`amd/mhc.py` / `amd/cast_back.py` 都已删。**
 
-   base sgl-dev 镜像里**已经**有从源码为 ROCm 编好的 tilelang `a55a8230`(含 tvm-ffi,`import tilelang`/`tvm_ffi` 都干净)—— **不用自己编 tilelang**。只需在 miles 层加两步:
+   base sgl-dev 镜像里**已经**有从源码为 ROCm 编好的 tilelang `a55a8230`(含 tvm-ffi,`import tilelang`/`tvm_ffi` 都干净)—— **不用自己编 tilelang**。只需在 miles 层加几条 sed(以 Dockerfile 为准):
    ```dockerfile
    RUN pip install --no-deps tile_kernels==1.0.0 && \
        TK=/opt/venv/lib/python3.10/site-packages/tile_kernels && \
        sed -i '/^import tilelang$/d; /^from \. import ($/,/^)$/d' "$TK/__init__.py" && \
-       sed -i '/^from \. import engram$/d; /^from \. import mhc$/d' "$TK/modeling/__init__.py"
+       sed -i '/^from \. import engram$/d; /^from \. import mhc$/d' "$TK/modeling/__init__.py" && \
+       sed -i '/T\.pdl_sync()/d' "$TK/mhc/post_kernel.py" && \
+       TLH=/opt/tilelang/src/tl_templates/hip/hip_fp8.h && \
+       sed -i 's|...static_cast<float>(static_cast<hip_fp8_e4_t>(*this))...|...__half2float(__half(__hip_cvt_fp8_to_halfraw(data, interp)))...|' "$TLH" && \
+       sed -i 's|...hip_fp8_e5_t...|...E5M2...|' "$TLH"   # 两处 operator float,见 Dockerfile 全文
    ```
    - **`--no-deps`**:别让 tile_kernels 拉它自己那份 CUDA tilelang,复用镜像里 ROCm 编好的 a55a8230。
-   - **lazy-import sed**:删 `__init__.py` 的急加载(`import tilelang` + `from . import (全子模块)`),改懒加载。
-   - 实测:`import tile_kernels` ✅、`from tile_kernels.modeling.mhc.ops import ...` ✅、`sinkhorn` fwd+bwd kernel gfx950 JIT 编译+跑通 ✅。→ **后续可删 `amd/.../mhc.py`(torch)+ `hyper_connection.py` import 分叉回上游**;`cast_back`(fp8→float)仍撞 ROCm 7.0 `amd_hip_fp8.h` header bug,保留 triton。
+   - **lazy-import sed**(`__init__` / `modeling/__init__`):删急加载(`import tilelang` + 急 import engram),改懒加载 —— 否则 engram 用的 `TL_DISABLE_OUT_OF_BOUND_WARNING` enum 在 a55a8230 不存在,`import tile_kernels` 就崩。
+   - **pdl_sync sed**(`mhc/post_kernel.py`):删 mhc_post 的 `T.pdl_sync()`(Hopper grid-sync 启动优化,no-op 数学,ROCm 无实现)。
+   - **hip_fp8.h sed**(tilelang 源码,`/opt/tilelang/src/tl_templates/hip/hip_fp8.h`):把 `fp8_e{4,5}_t::operator float()` 的 `static_cast<float>` 换成 `__hip_cvt_fp8_to_halfraw` 的 on-device 转换 —— **这条解锁 cast_back**(fp8→float 不再撞 SDK host-only `operator float`)。上游修复在我们 tilelang fork 的 PR;base 镜像的 tilelang 收了这个修复后这两条 sed 可删。
+   - 实测:`import tile_kernels` ✅;mhc 7 op `sinkhorn` fwd+bwd gfx950 JIT 编译+跑通 ✅;cast_back `per_token_cast_back` 在**全 bake 好的镜像**里多形状 bit-exact vs `float(fp8)*scale`(bf16/fp32、block 整除/不整除)✅。→ `hyper_connection.py`(mhc)、`qat.py`(cast_back)两平台同一 import,**AMD torch/triton 重写已删**。
 
    **现状(为什么要 sed)**:base tilelang = `a55a8230`(2026-01-29),比 tile_kernels 1.0.0 期望的 tilelang 早;tile_kernels 的 **engram 子模块**用了 `TL_DISABLE_OUT_OF_BOUND_WARNING`(tilelang commit `5951bce7`/2026-02-05 才加的 enum),a55a8230 没有 → 急加载 engram 时 `AttributeError` 崩。engram 我们不用,lazy-import 绕过即可(mhc 不依赖这个 enum)。
 
    **移除条件**:base sgl-dev 的 ROCm tilelang 升到 **≥0.1.8**(含该 enum,且 tvm-ffi/dlpack 已正确 ROCm 编)→ engram 急加载不再崩,这个 sed 可删。**盯 `rocm/sgl-dev` 新 tag 的 tilelang SHA**(现 0627/0708 都还是 a55a8230)。
 3. **【未来时,等 AMD 真正重写 forward 级 kernel 再上】用 `--spec` + attention subclass 隔离 AMD 的 kernel 变体。** 机制:仿 `get_dsv4_spec`(deepseek_v4.py:353)做一个平行的 `get_dsv4_amd_spec`(放 `amd/models/deepseek_v4/deepseek_v4_amd.py`),返回 `ModuleSpec(module=DeepSeekV4AttentionAMD)`;`DeepSeekV4AttentionAMD(DeepSeekV4Attention)` **subclass 复用**共享模型逻辑,只 override 掉 kernel 调用;fork 发生在启动脚本选 `--spec`(NV 脚本用原 spec,AMD 脚本用 amd spec),**运行时零 if-hip**。共享类改动压到最小:把要换的 kernel 调用(如 forward:319 的 `sparse_attn_tilelang(...)`)抽成一个几行的 hook 方法(additive、可上游),AMD 子类只 override 这个 hook → 零重复、零散 if-hip。
-   - **为什么现在不做**:回退 perf-Liger 后只剩 **3 处分叉,且全是 import-time gate**:`qat.py` cast_back / `compressor.py` precision_aligned 是 load-bearing(subclass 为继承而 import 共享类时就连锁触发 `from tile_kernels import` / hipblas gemm,ROCm 上 import 即崩,只有那个 `if hip` gate 拦着);`hyper_connection.py` mhc 还是外部 Megatron 构造(不在 attention spec 树里)。spec/subclass 是**运行时**、晚于 import,**这 3 处一个都碰不到**(q_rmsnorm/ce 那种 forward 运行时调用已全部回退成 NV torch,不再有分叉)。→ 现在建平行入口纯属零收益。
+   - **为什么现在不做**:mhc / cast_back 回归真 tile_kernels、Liger 回退后,只剩 **1 处 import 分叉**:`compressor.py` 的 precision_aligned(hipblas 无 bf16-in/fp32-out gemm)是 load-bearing —— subclass 为继承而 import 共享类时会连锁触发那个 gemm,ROCm 上 import 即崩,只有那个 `if hip` gate 拦着。spec/subclass 是**运行时**、晚于 import,**碰不到这处 import gate**(q_rmsnorm/ce forward 调用已回退成 NV torch,mhc/cast_back 已两平台同一 import,都不再分叉)。→ 现在建平行入口纯属零收益。
    - **什么时候值得做**:当 AMD 开始有**整份不同的 forward 级大 kernel**要换(Triton / FlyDSL 重写 sparse_attn / indexer,即 `amd/.../kernel/sparse_attn_amd.py` 这类)。那些是 forward 里的 kernel 调用、不是 import gate,subclass+hook 是最干净的 swap 点,且能一次容纳多个大 kernel,平行入口的成本才摊得平。
 4. **【待 Xinyu 亲自实测】把 `precision_aligned_ops.py` 的 ROCm fallback 研究透 —— hipblas 到底能不能 `torch.mm(bf16, bf16.t(), out_dtype=fp32)`。** 当前 `amd/models/deepseek_v4/precision_aligned_ops.py` 是整份 mirror `ops/kernel/precision_aligned_ops.py`,唯一 diff 就是 forward 那一行:NV 走 `torch.mm(x_2d, w.t(), out_dtype=torch.float32)`(cublas bf16-in/fp32-out),AMD 退成 `torch.mm(x_2d.float(), w.t().float())`(纯 fp32)。当时的判断是"hipblas 不支持 bf16-in/fp32-out gemm"(E26),但**没系统实测坐实** —— 要自己在 gfx950 上跑一个最小复现:
    - 直接 `torch.mm(a_bf16, b_bf16, out_dtype=torch.float32)` 到底报什么错 / 还是静默走别的路?换 `torch.matmul` / `torch.addmm` / 显式 `out=` 有没有区别?ROCm/hipBLASLt 版本相关吗?
