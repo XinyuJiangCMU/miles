@@ -137,6 +137,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.rollout_num_gpus = self.num_nodes * self.num_gpus_per_node
         else:
             self.rollout_num_gpus = self.rollout_num_nodes * self.num_gpus_per_node
+        # The 4-layer config is a toy smoke test; its checkpoint is ~362G (26B params of MoE
+        # experts + full optimizer state) and only fills the disk / wedges the run. Never save it.
+        # Real full/Pro runs keep default saving (skip_saving stays False).
+        if self.model_name == "DeepSeek-V4-Flash-FP8-4layer":
+            self.skip_saving = True
 
     @property
     def megatron_model_type(self):
