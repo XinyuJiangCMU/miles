@@ -312,6 +312,25 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 - **Step 4 ⬜ 产出**:A(landscape)+ B(实测精度/速度)合成 slide/report + proposal(哪个算子落哪个库)。
 - **卡点**:Step 2-4 要 GPU,机器被 dn 抢占;GPU 一有即上。harness 可先离线写好等卡直接跑。
 
+## AMD kernel 隔离(`miles_plugins/amd/` 文件夹)
+
+为了让 AMD 改动可维护、可上游,把 DSv4 的 AMD-specific kernel 从 NV 主线**物理隔离**到 `miles_plugins/amd/models/deepseek_v4/`(路径镜像主线 `models/deepseek_v4`)。原则:每个 op 只在**一个 import 处按 `torch.version.hip` 分叉**,主线 call-site 不留 if-hip;NV 路径(外部 `tile_kernels` / torch)字节不变;不碰 Miles Core(sync/wait/update + Ray 编排)。以后不要 AMD 支持,删掉这个文件夹 + 几处 import 分叉即可回退。
+
+**五个 AMD 文件各替什么:**
+
+| AMD 文件(`amd/models/deepseek_v4/`)| 替 NV 的什么 | 分叉在哪个主线文件 |
+|---|---|---|
+| `cast_back.py` | 外部 `tile_kernels.quant.per_token_cast_back`(FP8 反量化,CUDA-only)→ Triton 重写 | `ops/qat.py` |
+| `mhc.py` | 外部 `tile_kernels.modeling.mhc.ops`(7 个 mHC op,CUDA-only)→ torch drop-in | `ops/hyper_connection.py` |
+| `rmsnorm.py` | `deepseek_v4.py` 里内联 torch q-RMSNorm → Liger triton | `deepseek_v4.py` |
+| `ce.py` | `math_utils.py` 里 torch CE log-prob → Liger triton | `loss_hub/math_utils.py` |
+| `precision_aligned_ops.py` | `ops/kernel/precision_aligned_ops.py` 的 `linear_bf16_fp32`(compressor parity):hipblas 不支持 bf16-in/fp32-out gemm → 纯 fp32 matmul。**整份手动 mirror**,仅 forward 差一行,backward 是 NV 逐行拷贝、parity-critical,NV 改 backward 时要手动同步 | `ops/compressor.py` |
+
+**待办:**
+
+1. **【必做 / 高优先】在 NV 卡上和真 `tile_kernels` 对精度。** 当前 AMD 版只和数学参考对过(cast_back 的 `float(fp8)*scale` bit-exact;mhc 那 7 个函数是从 sglang tilelang 参考反推的;rmsnorm/ce 换了 Liger),**都没和真 `tile_kernels` 比过**(它需要 tilelang≥0.1.9,gfx950 上撞 ROCm 7.0 的 fp8→float device-cast bug 编不过)。这是**正确性缺口**:要在 NV 机器上跑 `tile_kernels`([deepseek-ai/TileKernels](https://github.com/deepseek-ai/TileKernels),MIT)当 ground truth,逐 op 对 forward 输出 + backward 梯度(对 activation / 对 weight 两方向)。leadership 明确要的"逐项跑测精度",卡在没 NV 机器。
+2. **【低优先,TODO 1 之后】把替 `tile_kernels` 的两处归一个子包。** 只涉及**真正替 `tile_kernels` 的两处** —— `cast_back`(quant)+ `mhc`(7 个 op);`rmsnorm`/`ce` 替的是主线内联 torch、走 Liger,**不属于这个包**。做法不是"重写整个 tile_kernels 库",而是把已有的 `cast_back.py`+`mhc.py` 归到一个统一入口(如 `tile_kernels_amd`),让 AMD 侧 `from tile_kernels_amd import ...` 与 NV 的 `from tile_kernels import ...` 结构对称、一处维护。纯组织性优化,不改功能,等 TODO 1 验证过再做。
+
 ## 优化路线图(已完成实测 + 待办)
 
 > 稳定性验证完成后的下一阶段:**给 rollout / 训练提速**。方法论:**每个改进单独 A/B 测**(一次只动一项才知各自贡献),粗略记提升即可。基线取归档稳定 run 的 wandb 11 步均值:**step 20.9min / rollout(train_wait)7.4min / actor_train 9.5min**,reward 0.44–0.68。改动进 fork 分支 `wip/dsv4-flash-full-train-20260701-loop`(commit+push,不开 PR)。
