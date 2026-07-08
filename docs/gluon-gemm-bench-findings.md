@@ -52,7 +52,7 @@ fused-MoE** kernels — different gluon kernels — not this blockscale GEMM.
 - **Serving (sglang): only for whitelisted shapes, and not DSv4's.** sglang's `fp8_utils.py` routes the dense
   fp8 Linear to the triton path (which the gluon kernel could drop into) only for 14 tuned (n,k) pairs
   (all DeepSeek-R1/V3 shapes: 7168/32768…). **None of DSv4-4layer's dense (n,k) are in it** → DSv4 serving
-  uses CK. Plus ROCm-7.0 hipcc miscompiles the bpreshuffle path on gfx95 (#23319; sglang guards it to hip≥7.2),
+  uses CK. Plus ROCm-7.0 hipcc miscompiles the bpreshuffle path on gfx95 (# 23319; sglang guards it to hip≥7.2),
   and live serving runs system triton 3.4 (<3.6, can't run gluon) which is 保底 (not to be changed).
 - Net: even a winning gluon GEMM would not land in this training run or this container's serving without
   (whitelist + import swap + triton≥3.6) — i.e. ecosystem/future, not here.
