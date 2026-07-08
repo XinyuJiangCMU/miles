@@ -293,6 +293,8 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 
 **一句话定调(供 proposal)**:量化 GEMM 落 **aiter**(AMD 战略 + DSv4 现成,PR 可见度最大),mHC/融合训练算子落 **Liger**(社区杠杆 + 现成 mHC;招牌 = 补 gfx950/ROCm 支持,`mhc.py` 现为 CUDA-tuned、`num_warps` 未按 wavefront=64 调、无 `_amd` backend,对标已 merged 的 NPU mHC PR),**Primus-Turbo** 作 AMD 内部训练栈备选,自写仅原型(HipKittens 先例:独立小库被 AMD 反吸收进 TE)。AMD 落后前沿 ~6-12 月的缺口(可靠 gfx950 block-scale FP8、TE-fork 的 MXFP4/NVFP4、scaled-MFMA tuned GEMM)**正是上游 PR 刷影响力的落点**。
 
+**实测旁证:aiter 的 gluon blockscale FP8 GEMM 目前不 win**(2026-06-28,gfx950)。真实 DSv4-4layer GEMM 形状上,gluon `gemm_a8w8_blockscale`(a8w8,act 1×128 / weight 128×128)数值正确(cos=1.0、relerr_vs_ck=0),但比 aiter production CK/asm kernel **慢 2-8×**(大-M geomean gl/ck **0.28x**、K=4096 最差 ~5×),对纯 triton 也基本不赢、无一形状胜。根因:这版 gluon kernel 没用 CDNA4 关键技法——非 hardware scaled-MFMA(手动 post-MFMA 乘 block scale)、无 async_copy、非 persistent,是早期未优化 kernel(TokenSpeed blog 的 1.1-1.6× 胜绩在 attention/MoE,是别的 gluon kernel)。而且**就算它快也落不到本训练/服务**:训练侧 blockwise-fp8 GEMM 走 TE 自己 vendored 的 triton kernel(`blockwise_fp8_gemm.py`,不碰 aiter);DSv4 稠密形状不在 sglang 的 14 个 tuned 白名单(走 CK)+ 服务容器 triton 3.4(<3.6 跑不了 gluon)+ ROCm 7.0 hipcc 在 gfx95 误编 bpreshuffle 路(sglang guard hip≥7.2,# 23319)。→ 印证「自写仅原型」:价值在生态/未来,不在本训练。
+
 ### on-hardware 验证清单(有卡后做 = leadership 要的"逐项跑测精度")
 
 对每个候选算子做 **forward + backward** unit test:输出和梯度(分别对 activation + weight 两方向)跟 FP32/torch numeric reference 比(gradcheck 式)在 **gfx950** 上跑。重点:① aiter/Primus 的 **FP8 blockscale GEMM 反向**(dgrad/wgrad);② Liger **mHC 在 gfx950 的数值 parity**(fwd+bwd);③ **rollout(sglang/aiter forward)↔ 训练(Primus/TE backward)量化边界一致性**(on-policy 关键)。
@@ -378,6 +380,37 @@ R1–R9 做完后 profile 当前 run(steady-decode profiler、wandb `perf/*`、r
 4. **indexer-replay TP capture**(去 `attn_tp==1` assert + rank0 广播 top-k)—— 让 DSA R3 支持注意力 TP,通用价值 → sglang(diff 备份 `docs/sglang-indexer-topk-tp-capture.patch`)。
 5. **E22 getattr 保护** —— 小修,可随第 1 项一起。
 - 注:`offload-fraction 0.75` 那类是"配方调参"不是代码 PR,整理成一篇"4 节点显存平衡"经验更合适。
+
+---
+
+## 附:4-layer bring-up 报错台账(E2..E26)
+
+> 全量 full-train 之前,先在**单机 8 卡用 4-layer 版**把「能加载 → FP8 转 torch_dist → 跑通一个 train step」整条链走通(正文「一」提过)。这一阶段的核心不是一堆独立 bug,而是**一套 build 配方 + 一套 rollout env**:把 DSv4 的 sparse-attn indexer / MHC / MoE 从 CUDA-only(`deep_gemm` / `<cuda/ptx>` / tilelang / `<cuda_fp8.h>`)整体切到 aiter/triton。验收判据(锚 AMD TE blockwise FP8 PR # 647,无公开 NV 逐张量数字):fp8-vs-bf16 **relerr ≤ 0.04**、on-policy train-vs-rollout logprob **abs-diff ≤ 0.04**(≥10 步不上升)。台账:
+
+| 编号 | 症状(一句) | 根因 | 修法 |
+|---|---|---|---|
+| **E2** | actor init 撞 `No module tile_kernels` → spec=None | `qat.py`/`hyper_connection.py` 硬 import CUDA/SM90-only 的 tile_kernels,gfx950 装不了 | `per_token_cast_back` + 7 个 mhc 函数纯 torch autograd 重写(后换 Liger triton,详见正文「一」) |
+| **E10** | sgl_kernel 缺 dsv4 op | uninstall+重编 base v0.5.14 会丢自带 DSv4 op | 不重编,用 base 自带 |
+| **E11** | ray `not a valid Sentinel` | requirements 把 click 升到 8.4.2 破 ray 2.44 CLI | re-pin `click==8.2.1` |
+| **E12** | indexer `No module deep_gemm`(PagedIndexerMetadata CUDA-only) | metadata 走 deep_gemm | `FP8_PAGED_MQA_LOGITS_TORCH=1`(metadata=None) |
+| **E13** | topk_v2 `<cuda/ptx> not found` | topk JIT 走 cuda ptx | `USE_TOPK_V2=false` |
+| **E14** | mhc `NameError deep_gemm` | MHC prenorm 走 deep_gemm | `DEEPGEMM_HC_PRENORM=false`+`TILELANG_MHC=false` → `aiter.ops.mhc` |
+| **E15** | MoE down_proj 的 tp_invariant row-linear 在 fp8 tuple 上读 `.shape` 炸 | true_on_policy 的 `should_use_tp_invariant_row_linear` 不认 fp8 tuple | `Fp8LinearMethod` gate 短路(sglang fork,详见正文「上游 PR 盘点」第 2 项) |
+| **E16** | shared_experts silu 掉到 CUDA `silu_and_mul_clamp`(`<cuda_fp8.h>` gfx950 编不了) | 旧 base aiter 缺 `fused_clamp_act_mul`(aiter PR # 3057 才引入) | 换 base aiter `7d604afe5`,`FUSED_CLAMP_ACT_MUL` 走默认 True(miles PR # 1506) |
+| **E17** | cuda graph capture 在 ROCm colocate hang(GPU 0%) | aiter AR 的 IPC buffer 与 colocate memory_saver 冲突 | 关 cuda graph(colocate+ROCm gate);根因+解详见正文 R7 |
+| **E18** | aiter config-merge FileBaton 死锁(colocate 8 engine 抢同一 baton) | `update_config_files` merge 多文件走 mp_lock | `AITER_CONFIG_GEMM_*`(6 个)+`_FMOE` 各指单文件(`len≤1` 短路 merge) |
+| **E19** | rollout `Tensor match failed` @ `c4_v2.cuh`(kernel 期望 2D 收 3D) | compressor_v2 的 c4_v2 kernel | `USE_COMPRESSOR_V2=false` → v1 triton compress |
+| **E20** | indexer paged-MQA-logits 在 ROCm 无可用 kernel | aiter gluon 需 triton≥3.6、aiter legacy 要 `block==1` 与 DSv4 page 不符 | 定案 torch fn `fp8_paged_mqa_logits_torch`(后 R1 升 triton 3.7 解锁 aiter 快路,详见正文 R1) |
+| **E21** | aiter gluon 编译 `CDNA_VERSION is not in list` | gluon 需 triton≥3.6,容器 triton 3.4 | 归 E20 torch fn;R1 升 triton 3.7 才走 gluon |
+| **E22** | `indexer.py` 无条件读 `c4_sparse_raw_indices` → AttributeError | 非 capture 路径本该 None | `getattr(...,None)`(commit `f46525c85a`,详见正文「五」第 2 坑) |
+| **E23** | `_c128_decode_kernel` 的 `tl.load` 指针 (1,D) vs mask (BLOCK,D) | triton 3.4 不自动广播 | 补 `(slot_offs*0)[:,None]` 显式广播(commit `914dd3d93d`,详见正文「五」第 3 坑) |
+| **E24** | train step 崩 `rollout_routed_experts is required` | Rust `sglang_router` v0.3.2 转发 /generate 时丢 `return_routed_experts` 字段(pin `openai-protocol` 1.0.0 无 flatten catch-all) | ROCm 走 miles python router `--use-miles-router`(is_hip gate,commit `b9047e3`) |
+| **E25** | compute_log_prob 崩 `fuse_wgrad_accumulation not supported in ROCm blockwise grouped FP8` | TE MoE grouped linear 反向不支持 wgrad 融合累加 | `--no-gradient-accumulation-fusion`(is_hip gate,DDP hook 补 fp32 累加,详见正文「训练反向」第 2 点) |
+| **E26** | compressor wkv `torch.mm(bf16,bf16,out=fp32)` ROCm hipblas 不支持 | hipblas 无 bf16-in/fp32-out 路径 | `_BFloat16LinearFP32Func` 加 hip guard 用 fp32 matmul(数值 ≥ bf16-in/fp32-accum) |
+
+> E12/E13/E14/E18/E19/E20 那批 env 已固化进 `docker/Dockerfile.rocm`(rollout env 段)+ 训练脚本 `scripts/amd/run-deepseek-v4-flash-fp8-4layer-amd.sh`,不用手 export。
+
+**bring-up 阶段显式不做**(防在 toy 上空转):不追 4-layer 收敛 / loss 下降 / eval 准确率(模型未训练,eval 无意义);ue8m0 vs fp32 scale 属 recipe 差异,先归因 recipe 再归因 kernel,别死磕修不存在的 bug。
 
 ---
 
@@ -473,4 +506,4 @@ docker exec -i \
 
 [aiter](https://github.com/ROCm/aiter)(roadmap # 3442,wedge # 2061 / fix # 2075)· [sglang # 19162](https://github.com/sgl-project/sglang/pull/19162) / # 20155(memory-saver AR fix)· [sglang # 23581](https://github.com/sgl-project/sglang/issues/23581)(SGLANG_USE_AITER_AR)· [# 24011](https://github.com/sgl-project/sglang/issues/24011)(ROCm hipEventQuery capture bug)· [# 29657](https://github.com/sgl-project/sglang/pull/29657)(DSV4 piecewise cuda graph WIP)· [# 29985](https://github.com/sgl-project/sglang/pull/29985)(DSV4 capture-OOM)· [# 29144](https://github.com/sgl-project/sglang/issues/29144)(DSv4-Flash spec-decode DP-attn deadlock)· [# 28685](https://github.com/sgl-project/sglang/issues/28685)(gfx950 blockscale 数值坑)· [Primus-Turbo](https://github.com/AMD-AGI/Primus-Turbo)· [Liger-Kernel](https://github.com/linkedin/Liger-Kernel)· [DeepGEMM](https://github.com/deepseek-ai/DeepGEMM)· [ROCm MLPerf v6.0](https://rocm.blogs.amd.com/artificial-intelligence/mlperf-training-v6.0/README.html)· [NVFP4 预训练 arXiv 2509.25149](https://arxiv.org/abs/2509.25149)· [HipKittens](https://github.com/HazyResearch/HipKittens)· [LMSYS DSv4 Day0](https://www.lmsys.org/blog/2026-04-25-deepseek-v4/)
 
-<!-- v4:真正合并去重版。narrative(一~七)+ 耗时 + 反向/优化器 + recipe + NV 对比 + kernel 对照 + kernel landscape + 优化路线图(R1-R10 实测/待办,含 cuda-graph wedge 根因)+ 多机 bring-up 操作手册 + Sources。删:ledger OPT-R* 逐轮流水账、loop 纪律/心跳、单次 job id、node-6 wedge 运维细节、PLAYBOOK 与正文三节重复的概念叙述、3node 一次性状态。 -->
+<!-- v4:真正合并去重版。narrative(一~七)+ 耗时 + 反向/优化器 + recipe + NV 对比 + kernel 对照 + kernel landscape + 优化路线图(R1-R10 实测/待办,含 cuda-graph wedge 根因)+ 4-layer bring-up 报错台账(E2..E26,从 dsv4-rocm-fp8-bringup.md 提炼去重合并)+ 多机 bring-up 操作手册 + Sources。删:ledger OPT-R* 逐轮流水账、loop 纪律/心跳、单次 job id、node-6 wedge 运维细节、PLAYBOOK 与正文三节重复的概念叙述、3node 一次性状态;bringup 的 overnight 任务/状态、逐轮 train{N} 过程、产物路径大小等 ephemeral。 -->
