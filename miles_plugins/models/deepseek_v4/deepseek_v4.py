@@ -37,17 +37,17 @@ from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
 
-# ROCm: route the weightless inline q-RMSNorm through Liger's triton fwd+bwd
-# (gemma casting = fp32 internal, cast back to input dtype). NV keeps torch path.
-# NOTE: compressor.norm is intentionally NOT routed here — it is parity-pinned to
-# SGLang's compressor norm (pure fp32), routing it through triton would risk
-# rollout<->train divergence for little (<1%) gain.
-_USE_LIGER_RMSNORM = torch.version.hip is not None
-if _USE_LIGER_RMSNORM:
+def q_rmsnorm(q, eps):
+    q_fp32 = q.float()
+    return (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + eps)).to(q.dtype)
+
+
+# ROCm overrides q_rmsnorm with the in-tree AMD Liger kernel (miles_plugins/amd/models/deepseek_v4).
+if torch.version.hip is not None:
     try:
-        from liger_kernel.transformers.functional import liger_rms_norm
+        from miles_plugins.amd.models.deepseek_v4.rmsnorm import q_rmsnorm  # noqa: F811
     except Exception:
-        _USE_LIGER_RMSNORM = False
+        pass
 
 
 def _enable_deepseek_v4_tf32():
@@ -254,11 +254,7 @@ class DeepSeekV4Attention(MegatronModule):
         qr = q = self.q_norm(q_after_wq_a)
         q_after_wq_b = self.wq_b(q)[0]
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
-        if _USE_LIGER_RMSNORM:
-            q = liger_rms_norm(q, None, self.eps, offset=0.0, casting_mode="gemma", in_place=True)
-        else:
-            q_fp32 = q.float()
-            q = (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + self.eps)).to(q.dtype)
+        q = q_rmsnorm(q, self.eps)
         q = q.clone()
         apply_rotary_emb(q[..., -rd:], freqs_cis)
 

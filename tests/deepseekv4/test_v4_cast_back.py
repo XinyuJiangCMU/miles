@@ -1,4 +1,4 @@
-"""Bit-exactness test for the in-tree Triton per_token_cast_back (ops/kernel/cast_back.py).
+"""Bit-exactness test for the in-tree Triton per_token_cast_back (amd/models/deepseek_v4/cast_back.py).
 
 Imports the kernel DIRECTLY (bypassing the platform gate in ops/qat.py) so it runs on both
 NV and ROCm — it only needs triton. Reference is the op's spec: float(fp8) * scale.
@@ -13,7 +13,7 @@ except ImportError:
     triton = None
 
 if triton is not None:
-    from miles_plugins.models.deepseek_v4.ops.kernel.cast_back import per_token_cast_back
+    from miles_plugins.amd.models.deepseek_v4.cast_back import per_token_cast_back
 else:
     per_token_cast_back = None
 

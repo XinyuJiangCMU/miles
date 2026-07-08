@@ -5,7 +5,7 @@ import torch
 # tools/fp8_cast_bf16.py). NV (torch.version.hip is None) keeps tile_kernels byte-for-byte.
 # Same platform-gate idiom as hyper_connection.py.
 if torch.version.hip is not None:
-    from .kernel.cast_back import per_token_cast_back
+    from miles_plugins.amd.models.deepseek_v4.cast_back import per_token_cast_back
 else:
     from tile_kernels.quant import per_token_cast_back
 
