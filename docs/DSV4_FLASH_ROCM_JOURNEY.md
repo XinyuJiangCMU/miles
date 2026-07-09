@@ -312,9 +312,9 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 - **Step 4 ⬜ 产出**:A(landscape)+ B(实测精度/速度)合成 slide/report + proposal(哪个算子落哪个库)。
 - **卡点**:Step 2-4 要 GPU,机器被 dn 抢占;GPU 一有即上。harness 可先离线写好等卡直接跑。
 
-## AMD kernel 隔离(`miles_plugins/amd/` 文件夹)
+## AMD kernel 隔离 —— 已全部消解(`miles_plugins/amd/` 文件夹已删除)
 
-为了让 AMD 改动可维护、可上游,曾把 DSv4 的 AMD-specific kernel 从 NV 主线**物理隔离**到 `miles_plugins/amd/models/deepseek_v4/`。**2026-07-08 后这个文件夹已清空**(只剩 `__init__.py`)—— 三个 AMD kernel 全部消解:
+为了让 AMD 改动可维护、可上游,曾把 DSv4 的 AMD-specific kernel 从 NV 主线**物理隔离**到 `miles_plugins/amd/models/deepseek_v4/`。**2026-07-09 后这个文件夹整个删掉了** —— 三个 AMD kernel 全部消解,没有任何文件 import `miles_plugins.amd`,零 AMD 专属 kernel、零 import 分叉。将来若真要重写 forward 级大 kernel(见待办 3),再新建这个文件夹即可。三者去向:
 
 | 曾经的 AMD 文件 | 现在怎么处理 | 结果 |
 |---|---|---|
@@ -336,10 +336,19 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 | 回退项 | NV 现在走 | 回退后 NV 文件 diff | 曾经的 Liger 加速(还原参考) |
 |---|---|---|---|
 | **CE log-prob** | 内联 torch `log_softmax`+`gather` | `loss_hub/math_utils.py` → **0 diff(byte-for-byte 上游)** | `amd/.../ce.py` 用 `liger_cross_entropy`,省两次 `[R, V=129280]` 物化(no-entropy 快路);dispatch 曾在 `math_utils.py` 顶 |
-| **q-RMSNorm** | 内联 torch fp32 rsqrt | `deepseek_v4.py` → 仅剩无关的 `V4Indexer(layer_id=…)` | `amd/.../rmsnorm.py` 用 `liger_rms_norm`(gemma casting);dispatch 曾在 `deepseek_v4.py:46` |
+| **q-RMSNorm** | 内联 torch fp32 rsqrt | `deepseek_v4.py` → **0 diff**(byte-for-byte 上游)| `amd/.../rmsnorm.py` 用 `liger_rms_norm`(gemma casting);dispatch 曾在 `deepseek_v4.py:46` |
 | **mHC 加速层** | 真 `tile_kernels.modeling.mhc.ops`(两平台同一 import) | `hyper_connection.py` → **0 分叉**(NV/ROCm 都 `import tile_kernels`) | `_USE_LIGER_MHC` + `liger_mhc_coeffs/pre/post_res`,在 `hc_pre_raw`/`hc_post_raw` 里(注意 `hc_post` 的 `comb.transpose` 修正,漏了 ~28% 端到端误差) |
 
-> **注**:这里回退的只是 **perf-only 的 Liger 加速层**(CE / q-RMSNorm / mHC-Liger)。底座本身:`mhc` 和 `cast_back` 现在都走**真 tile_kernels**(靠 Dockerfile sed 在 gfx950 编译跑通,见下节),两平台同一 import、无分叉;`precision_aligned` 是唯一保留的 AMD 硬分叉(hipblas gemm 限制)。
+**为最小 PR 额外回退的两项(2026-07-09,同"功能留后"策略):**
+
+| 回退项 | NV/AMD 现在走 | 回退后 diff | 还原参考(commit) |
+|---|---|---|---|
+| **SwiGLU 融合(AMD 提速)** | 两平台都 `bias_activation_fusion=False`,走 inline torch GLU(clamp 由 `activation_func_clamp_value` 生效)| `mbridge/deepseekv4.py` → **0 diff** | `c356fc1` `[AMD] DSv4 MoE SwiGLU: fused clamp+offset triton fwd+bwd on ROCm`(AMD 开 fusion 走 Megatron-fork 打了 clamp+offset 的 `fused_bias_swiglu`;实测能跑,只是提速,非正确性必需)|
+| **indexer-replay 接线(V4)** | upstream V4Indexer(无 replay 挂载)| `deepseek_v4.py` / `v4_indexer.py` → **0 diff** | `d6bee26` `[AMD] DSv4 indexer-replay: rollout->train DSA KV top-k replay`(replay infra 是 upstream 给 GLM5 做的 #1253/#1255;V4 接线是我们加的。`use_rollout_indexer_replay=False` 时全程 no-op,不影响能跑。**重开有 blocker**:TP attention 下 sglang DSA `seq_lens` assert,需去 assert + rank0 广播 top-k `SGLANG_DSA_TOPK_BROADCAST=1`,见待办 #16)|
+
+> **注**:回退的都是 **perf-only / 关着的功能**(Liger、SwiGLU 融合、indexer-replay)。底座:`mhc` / `cast_back` 走**真 tile_kernels**(两平台同一 import,靠 Dockerfile sed);`precision_aligned` 是唯一保留的 AMD 硬分叉(torch ROCm 不支持 bf16-in/fp32-out gemm,见待办 4)。
+>
+> **⭐ 最小 V4 PR 的 NV 主线足迹 = 仅 `ops/kernel/precision_aligned_ops.py` 一处 8 行 if-hip 分支**;其余 AMD 支持全在 `Dockerfile.rocm`(tilelang/tile_kernels/inductor 的 sed)。`miles_plugins/amd/` 已整树删除。
 
 **待办:**
 

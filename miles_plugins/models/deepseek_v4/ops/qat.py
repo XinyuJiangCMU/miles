@@ -1,8 +1,5 @@
 import torch
 
-# per_token_cast_back comes from tile_kernels (deepseek-ai/TileKernels) on both platforms. On
-# ROCm/gfx950 it JIT-compiles as a real TileLang kernel once tilelang's hip_fp8.h fp8->float path
-# is patched to convert on-device (see docker/Dockerfile.rocm); NV stays byte-for-byte upstream.
 from tile_kernels.quant import per_token_cast_back
 
 from .kernel.act_quant import act_quant
@@ -11,8 +8,9 @@ from .kernel.act_quant import act_quant
 def fp8_simulate(x: torch.Tensor, block_size: int):
     """Simulate per-token FP8 (E4M3) cast + dequant with UE8M0 scaling.
 
-    The cast runs through the in-tree TileLang :func:`act_quant`; the cast-back uses
-    ``deepseek-ai/TileKernels`` :func:`per_token_cast_back` on both platforms.
+    Both the cast (via :func:`act_quant`) and the cast-back step are routed
+    through ``deepseek-ai/TileKernels`` so we share the same FP8 kernels with
+    the rest of the DeepSeek stack.
     """
     x_c = x.contiguous()
     y, scale = act_quant(x_c, block_size, "ue8m0")

@@ -17,13 +17,12 @@ from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 from miles_plugins.models.dsa_topk import get_dsa_topk_fn
-from miles.utils.replay_base import indexer_replay_manager
 
 
 class V4Indexer(MegatronModule):
     """DSA Indexer for DeepSeek-V4 C4 layers."""
 
-    def __init__(self, config: TransformerConfig, pg_collection=None, layer_id: int = 0):
+    def __init__(self, config: TransformerConfig, pg_collection=None):
         super().__init__(config=config)
 
         self.hidden_size = config.hidden_size
@@ -69,8 +68,6 @@ class V4Indexer(MegatronModule):
             rotate=True,
             cp_group=pg_collection.cp,
         )
-
-        indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=layer_id)
 
     def forward(self, x: torch.Tensor, qr: torch.Tensor, mask=None, packed_seq_params=None):
         """Forward pass.
@@ -134,13 +131,6 @@ class V4Indexer(MegatronModule):
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 
         topk_count = min(self.index_topk, index_scores.size(-1))
-        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
-        # replay manager / rollout capture use a 2D [n_tokens, kv] convention (same as the
-        # MoE router); index_scores is [batch, seqlen, kv] here, so flatten to 2D for topk
-        # then restore [batch, seqlen, index_topk]. No-op-equivalent for the non-replay path.
-        _isc_shape = index_scores.shape
-        index_scores = index_scores.reshape(-1, index_scores.shape[-1])
-        topk_indices = topk_fn(index_scores, topk_count)
-        topk_indices = topk_indices.reshape(*_isc_shape[:-1], topk_indices.shape[-1])
+        topk_indices = get_dsa_topk_fn(self.topk_backend)(index_scores, topk_count)
 
         return topk_indices

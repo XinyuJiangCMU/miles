@@ -1,15 +1,13 @@
-"""DeepSeek V4 Hyper-Connection utility.
+"""DeepSeek V4 Hyper-Connection utility — backed by deepseek-ai/TileKernels.
 
 Public API (`HCHeadParams`, `DeepSeekV4HyperConnectionUtil`) preserved so that
 the Megatron-LM patch (radixark/Megatron-LM PR #28) call sites in
 ``transformer_layer.py`` and ``transformer_block.py`` keep working.
 
-The mHC ops (``mhc_pre*`` / ``mhc_post`` / ``sinkhorn_normalize`` / ``mhc_head*``) come from
-``tile_kernels.modeling.mhc`` on both CUDA and ROCm -- on ROCm they JIT-compile as real TileLang
-HIP kernels on gfx950 (verified 2026-07-08), so there is no platform fork here. The ROCm image
-strips two CUDA-only bits from tile_kernels at build time (see docker/Dockerfile.rocm): the
-engram eager-import (unused submodule, missing-enum crash) and mhc_post's ``T.pdl_sync()`` (PDL /
-grid-sync is a Hopper launch optimization, no-op math, unsupported on ROCm).
+Internals route ``hc_pre_raw``/``hc_post_raw``/``hc_head_raw`` to
+``tile_kernels.modeling.mhc.{mhc_pre, mhc_post, mhc_head}`` which provide
+both forward and backward kernels (the legacy in-tree implementation only had
+a no-grad forward path — see ``_HYPER_CONNECTION_MIXER_NO_GRAD = True``).
 """
 
 import einops
@@ -17,8 +15,6 @@ import torch
 import torch.nn.functional as F
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
-from torch import Tensor
-
 from tile_kernels.modeling.mhc.ops import (
     mhc_head_compute_mix,
     mhc_post,
@@ -28,9 +24,11 @@ from tile_kernels.modeling.mhc.ops import (
     mhc_pre_split_mixes,
     sinkhorn_normalize,
 )
+from torch import Tensor
 
 # DeepSeek V4 originally used post = 2 * sigmoid(...) for the post-layer mix
-# (see the legacy ``hc_split_sinkhorn`` kernel), passed through ``post_mult_value``.
+# (see the legacy ``hc_split_sinkhorn`` kernel). TileKernels lets us pass the
+# same factor through ``post_mult_value``.
 _HC_POST_MULT_VALUE = 2.0
 
 
@@ -51,7 +49,7 @@ class HCHeadParams(MegatronModule):
 
 
 class DeepSeekV4HyperConnectionUtil:
-    """Hyper-Connection helper backed by the dispatched mHC ops above."""
+    """Hyper-Connection helper that delegates to TileKernels MHC kernels."""
 
     def __init__(self, config: TransformerConfig):
         self.norm_eps = config.layernorm_epsilon
@@ -68,8 +66,8 @@ class DeepSeekV4HyperConnectionUtil:
     ) -> tuple[Tensor, Tensor, Tensor]:
         """``x`` is ``(B, S, hc_mult, hidden)``. Returns layer input + post/comb mixes.
 
-        ``x`` is cast to bf16 (matching the original DeepSeek-V4 residual layout)
-        and ``fn`` stays fp32; the math runs in fp32 internally.
+        TileKernels' ``mhc_pre_norm_fn`` requires ``x`` in bf16 and ``fn`` in fp32
+        (matching the original DeepSeek-V4 weight layout).
         """
         dtype = x.dtype
         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
@@ -120,7 +118,11 @@ class DeepSeekV4HyperConnectionUtil:
         post: Tensor,
         comb: Tensor,
     ) -> Tensor:
-        """``x``: ``(B, S, hidden)``; ``residual``: ``(B, S, hc_mult, hidden)``."""
+        """``x``: ``(B, S, hidden)``; ``residual``: ``(B, S, hc_mult, hidden)``.
+
+        TileKernels' ``mhc_post_fwd`` expects ``x``/``residual`` in bf16 and
+        ``post``/``comb`` in fp32.
+        """
         dtype = x.dtype
         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
         res_bf16 = (residual if residual.dtype == torch.bfloat16 else residual.bfloat16()).contiguous()
@@ -142,9 +144,10 @@ class DeepSeekV4HyperConnectionUtil:
         dtype = x.dtype
         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
 
-        # The head only consumes the first ``hc_mult`` mix outputs (the "pre"
-        # slot). ``mhc_pre_norm_fn`` expects an ``fn`` with ``hc_mult3`` rows, so
-        # pad the head ``fn`` and slice back the first ``hc_mult`` columns.
+        # NOTE: TileKernels' ``mhc_head`` ends with ``mixes[..., :mhc_mult]``
+        # which is a non-contiguous view that ``mhc_head_compute_mix_fwd_kernel``
+        # rejects (it asserts ``strides[0] == mhc_mult``). We inline the body
+        # and force a contiguous slice before the kernel call.
         mhc_mult = self.hc_mult
         mhc_mult3 = mhc_mult * (2 + mhc_mult)
         fn_padded = hc_fn
