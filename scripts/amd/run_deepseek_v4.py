@@ -4,12 +4,9 @@ DeepSeek V4 training script.
 Supports:
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
-                                  Verified full-model profiles: 8 nodes x 8 GPUs on H200
-                                  or 8 nodes x 4 GPUs on GB300.
   - DeepSeek-V4-Flash-FP8-4layer  4-layer prune of the above for single-node
                                   smoke testing. **Cannot generate meaningful output -
                                   pipeline-only sanity check.**
-  - DeepSeek-V4-Pro-FP8           Verified profile: 32 nodes x 8 GPUs on H200.
 
 Usage patterns:
 
@@ -44,17 +41,12 @@ _DEFAULT_MODEL_ORG = {
     "DeepSeek-V4-Flash-FP8": "sgl-project",
     # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8.
     "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",
-    "DeepSeek-V4-Pro-FP8": "sgl-project",
 }
 
 _MEGATRON_MODEL_TYPE = {
     "DeepSeek-V4-Flash-FP8": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
-    "DeepSeek-V4-Pro-FP8": "deepseek-v4-pro",
 }
-
-_PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
-_BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
 
 @dataclass
@@ -65,7 +57,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: Literal[
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-FP8-4layer",
-        "DeepSeek-V4-Pro-FP8",
     ] = "DeepSeek-V4-Flash-FP8"
 
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
@@ -81,7 +72,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # performance configs
     num_gpus_per_node: int = 8
-    hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
     # use colocate by default. will switch to disaggregated mode when 0 < rollout_num_nodes < num_nodes
     rollout_num_nodes: int = 0
     colocate: bool = field(init=False)
@@ -103,9 +93,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # precision configs
     enable_r3: bool = True
     train_deterministic: bool = True
-    # Megatron-side training precision: blockwise FP8 128x128 GEMMs when True
-    # (Hopper: fp32 scales; Blackwell: pow2 scales, MXFP8-emulated), BF16 when False.
-    # Rollout always serves the source FP8 checkpoint either way.
+    # Megatron-side training precision: blockwise FP8 128x128 GEMMs (fp32 scales) when True,
+    # BF16 when False. Rollout always serves the source FP8 checkpoint either way.
     fp8_training: bool = True
     enable_mis: bool = False
 
@@ -117,8 +106,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.model_org = _DEFAULT_MODEL_ORG[self.model_name]
         if self.model_local_dir is None:
             self.model_local_dir = self.model_dir
-        if self.model_name in _PRO_MODEL_NAMES:
-            self.enable_r3 = False
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
         self.colocate = self.rollout_num_nodes == 0
@@ -139,21 +126,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     @property
     def bf16_name(self):
-        if self.model_name == "DeepSeek-V4-Pro-FP8":
-            return "DeepSeek-V4-Pro-BF16"
         return f"{self.model_name}-bf16"
-
-
-def _is_blackwell(args: ScriptArgs) -> bool:
-    if args.hardware != "auto":
-        return args.hardware in _BLACKWELL_HARDWARE
-
-    import torch
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
-    major, _minor = torch.cuda.get_device_capability()
-    return major >= 10
 
 
 def _download_dataset(args: ScriptArgs):
@@ -237,15 +210,6 @@ def _prepare_spmd(args: ScriptArgs):
             "--decoder-first-pipeline-num-layers 7 "
             "--decoder-last-pipeline-num-layers 6 "
         )
-    elif actor_num_nodes == 32 and actor_num_gpus_per_node == 8 and args.model_name == "DeepSeek-V4-Pro-FP8":
-        extra_args += (
-            "--tensor-model-parallel-size 8 "
-            "--pipeline-model-parallel-size 8 "
-            "--expert-model-parallel-size 32 "
-            "--decoder-first-pipeline-num-layers 7 "
-            "--decoder-last-pipeline-num-layers 6 "
-            "--make-vocab-size-divisible-by 32 "
-        )
     else:
         raise NotImplementedError(
             f"No verified SPMD conversion config for {args.model_name} "
@@ -316,21 +280,6 @@ def _get_parallel_config(args: ScriptArgs) -> str:
             "--expert-tensor-parallel-size 1 "
         )
 
-    # GB300: 4 GPUs/node
-    if actor_num_gpus_per_node == 4:
-        if total_gpus == 32:  # 8 nodes x 4 GPUs
-            return (
-                "--tensor-model-parallel-size 2 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 8 "
-                "--decoder-first-pipeline-num-layers 4 "
-                "--decoder-last-pipeline-num-layers 3 "
-                "--context-parallel-size 2 "
-                "--expert-model-parallel-size 4 "
-                "--expert-tensor-parallel-size 1 "
-            )
-
-    # H200: 8 GPUs/node
     if actor_num_gpus_per_node == 8:
         if total_gpus == 64:  # 8 nodes x 8 GPUs
             return (
@@ -341,17 +290,6 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--decoder-last-pipeline-num-layers 3 "
                 "--context-parallel-size 1 "
                 "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
-            )
-        elif total_gpus == 256:  # 32 nodes x 8 GPUs (Pro)
-            return (
-                "--tensor-model-parallel-size 8 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 8 "
-                "--decoder-first-pipeline-num-layers 7 "
-                "--decoder-last-pipeline-num-layers 6 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 32 "
                 "--expert-tensor-parallel-size 1 "
             )
 
@@ -457,16 +395,10 @@ def _train(args: ScriptArgs):
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
 
-    if args.model_name == "DeepSeek-V4-Pro-FP8":
-        sglang_world_size = 32
-        sglang_tp_size = 32
-        sglang_dp_size = 32
-        sglang_ep_size = 32
-    else:
-        sglang_world_size = 4
-        sglang_tp_size = 4
-        sglang_dp_size = 1
-        sglang_ep_size = 4
+    sglang_world_size = 4
+    sglang_tp_size = 4
+    sglang_dp_size = 1
+    sglang_ep_size = 4
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         f"--sglang-tp-size {sglang_tp_size} "
@@ -476,14 +408,6 @@ def _train(args: ScriptArgs):
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
     )
-    if args.model_name == "DeepSeek-V4-Pro-FP8":
-        sglang_args += (
-            "--sglang-enable-dp-attention "
-            "--sglang-cuda-graph-max-bs 8 "
-            "--sglang-moe-runner-backend deep_gemm "
-            "--sglang-moe-a2a-backend deepep "
-            "--sglang-deepep-mode low_latency "
-        )
     if args.enable_mtp:
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
@@ -498,9 +422,6 @@ def _train(args: ScriptArgs):
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
     }
-    if args.model_name == "DeepSeek-V4-Pro-FP8":
-        extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
-        extra_env_vars["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -560,9 +481,8 @@ def _train(args: ScriptArgs):
 
     if args.fp8_training:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-        # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
-        fp32_scales = "0" if _is_blackwell(args) else "1"
-        misc_args += f"""--train-env-vars '{{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"{fp32_scales}"}}' """
+        # gfx950 uses Hopper-style blockwise FP8 with fp32 scales.
+        misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"1"}' """
 
     train_args = (
         f"{ckpt_args} "
