@@ -96,11 +96,6 @@ RUN GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} \
 
 RUN pip install flash-linear-attention==0.4.2
 
-# ROCm MHC (and future RL ops): Liger triton fused fwd+bwd kernels. gfx950 has no
-# tile_kernels (CUDA-only); Liger is pure triton (cross-platform) and gated in-code
-# by torch.version.hip, so NV is unaffected. See ops/hyper_connection.py.
-RUN pip install liger-kernel==0.8.0
-
 # tile_kernels (deepseek-ai/TileKernels): real TileLang mHC + FP8 cast-back kernels on gfx950.
 # Build-time patches, all removable once the base image's tilelang/tile_kernels ship the fixes:
 #  - __init__/modeling seds: lazy-import; skip engram's eager import (missing TL_DISABLE_OUT_OF_BOUND
