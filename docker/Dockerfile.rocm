@@ -142,6 +142,25 @@ RUN pip install "setuptools==79.0.1"
 # Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
 RUN pip install "typer==0.25.1" "click==8.2.1"
 
+# ====================================== Install sgl-model-gateway ==============================
+# ROCm-built sgl-router-for-miles replaces the sglang_router wheel; unlike the stock Rust router it
+# preserves return_routed_experts on /generate passthrough, so R3 routing-replay works without the
+# python router workaround. (from radixark/miles#1556)
+ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
+ARG SGL_ROUTER_BRANCH=main
+RUN set -eux; \
+    export PATH="/root/.cargo/bin:${PATH}"; \
+    git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway && \
+    cd /build/sgl-model-gateway/bindings/python && \
+    ulimit -n 65536 && \
+    maturin build --release --features vendored-openssl --out /build/gateway_wheels && \
+    cd /build/sgl-model-gateway && \
+    cargo build --release --bin sgl-model-gateway --features vendored-openssl && \
+    cp target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
+    chmod +x /usr/local/bin/sgl-model-gateway && \
+    pip install --force-reinstall --no-deps /build/gateway_wheels/sglang_router-*.whl && \
+    rm -rf /build/sgl-model-gateway /build/gateway_wheels
+
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
     pip install -r /tmp/requirements.txt
 
