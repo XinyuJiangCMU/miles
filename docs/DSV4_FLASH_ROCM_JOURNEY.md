@@ -314,17 +314,17 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 
 ## AMD kernel 隔离(`miles_plugins/amd/` 文件夹)
 
-为了让 AMD 改动可维护、可上游,把 DSv4 的 AMD-specific kernel 从 NV 主线**物理隔离**到 `miles_plugins/amd/models/deepseek_v4/`(路径镜像主线 `models/deepseek_v4`)。原则:每个 op 只在**一个 import 处按 `torch.version.hip` 分叉**,主线 call-site 不留 if-hip;NV 路径(外部 `tile_kernels` / torch)字节不变;不碰 Miles Core(sync/wait/update + Ray 编排)。以后不要 AMD 支持,删掉这个文件夹 + 几处 import 分叉即可回退。
+为了让 AMD 改动可维护、可上游,曾把 DSv4 的 AMD-specific kernel 从 NV 主线**物理隔离**到 `miles_plugins/amd/models/deepseek_v4/`。**2026-07-08 后这个文件夹已清空**(只剩 `__init__.py`)—— 三个 AMD kernel 全部消解:
 
-**现在只剩一个 AMD 文件**(`precision_aligned_ops.py`)。`mhc` 和 `cast_back` 曾经也在这里(tile_kernels CUDA-only,gfx950 编不了),但 2026-07-08 靠 `Dockerfile.rocm` 里对 tilelang / tile_kernels 打的几条 sed(见下节「用真 tile_kernels」),两者都回归了**真 `tile_kernels`**、两平台同一条 import(无 if-hip 分叉),AMD 的 torch/Triton 重写已删除:
-
-| AMD 文件(`amd/models/deepseek_v4/`)| 替 NV 的什么 | 分叉在哪个主线文件 |
+| 曾经的 AMD 文件 | 现在怎么处理 | 结果 |
 |---|---|---|
-| `precision_aligned_ops.py` | `ops/kernel/precision_aligned_ops.py` 的 `linear_bf16_fp32`(compressor parity):hipblas 不支持 bf16-in/fp32-out gemm → 纯 fp32 matmul。**整份手动 mirror**,仅 forward 差一行,backward 是 NV 逐行拷贝、parity-critical,NV 改 backward 时要手动同步 | `ops/compressor.py` |
+| `mhc.py`(7 个 mHC op 的 torch drop-in)| 真 `tile_kernels.modeling.mhc.ops`(Dockerfile sed 让 gfx950 能编,见下节)| `hyper_connection.py` 两平台同一 import,**0 分叉** |
+| `cast_back.py`(FP8 反量化 Triton 重写)| 真 `tile_kernels.quant.per_token_cast_back`(靠 `hip_fp8.h` sed 解锁 fp8→float,见下节)| `qat.py` 两平台同一 import,**0 分叉** |
+| `precision_aligned_ops.py`(纯 fp32 mirror)| **合进** `ops/kernel/precision_aligned_ops.py`:forward 里一行 `torch.version.hip` 分支 | 单文件、backward 共享(消除手动同步隐患),**0 import 分叉** |
 
-**判据**:`precision_aligned` 是唯一"NV 走的路 ROCm 根本跑不了"(hipblas 无 bf16-in/fp32-out gemm)、**必须**有 AMD 版的。`mhc`/`cast_back` 之前被判为同类(tile_kernels 编不过),但 gfx950 的 fp8→float 编译问题用 tilelang `hip_fp8.h` sed 修好后,两者都能用真 tile_kernels 了 —— 详见下节。反之下面回退的都是"NV torch 版 ROCm 本来就能跑,Liger 只是加速",为 PR 干净先不加。
+**precision 为什么必须分支(已实测坐实)**:`torch.mm(bf16, bf16, out_dtype=torch.float32)` 在 ROCm 上被 **PyTorch dispatch 硬拒绝**(`RuntimeError: gemm input type at::BFloat16 and output type float is not supported for ROCm`,torch 2.9.0a0 / ROCm 7.0 实测,3 种形状全挂)—— 不是硬件不行,是 torch ROCm 后端没接 `out_dtype`。所以 ROCm 分支先 `.float()` 再纯 fp32 matmul:**和 NV cublas 路径数学等价**(同为 bf16 舍入输入 + fp32 累加 + fp32 输出),仅少了 cublas 的融合 kernel。**NV 运行时路径逐字节不变**(走 else 分支 = 原来那行)。
 
-**已删除的 AMD 文件(还原参考)**:`mhc.py`(commit `ba1de29` 删,7 个 mHC op 的 torch drop-in)、`cast_back.py`(FP8 反量化 Triton 重写)。两者都被真 tile_kernels 取代;真要看当时的 AMD 实现,`git show ba1de29^:miles_plugins/amd/models/deepseek_v4/mhc.py` / 对应 cast_back commit 即可。
+**还原参考**:`mhc.py` 见 `git show ba1de29^:...mhc.py`;`cast_back.py` / `precision_aligned_ops.py`(独立 mirror 版)见对应删除 commit 的父提交。
 
 ### perf-only Liger 已回退(为 V4 PR 保持最小 NV diff)
 
@@ -369,12 +369,9 @@ SOTA 不是单一分数,是**沿几条轴、锚定前沿、带日期**地比:
 
    **移除条件**:base sgl-dev 的 ROCm tilelang 升到 **≥0.1.8**(含该 enum,且 tvm-ffi/dlpack 已正确 ROCm 编)→ engram 急加载不再崩,这个 sed 可删。**盯 `rocm/sgl-dev` 新 tag 的 tilelang SHA**(现 0627/0708 都还是 a55a8230)。
 3. **【未来时,等 AMD 真正重写 forward 级 kernel 再上】用 `--spec` + attention subclass 隔离 AMD 的 kernel 变体。** 机制:仿 `get_dsv4_spec`(deepseek_v4.py:353)做一个平行的 `get_dsv4_amd_spec`(放 `amd/models/deepseek_v4/deepseek_v4_amd.py`),返回 `ModuleSpec(module=DeepSeekV4AttentionAMD)`;`DeepSeekV4AttentionAMD(DeepSeekV4Attention)` **subclass 复用**共享模型逻辑,只 override 掉 kernel 调用;fork 发生在启动脚本选 `--spec`(NV 脚本用原 spec,AMD 脚本用 amd spec),**运行时零 if-hip**。共享类改动压到最小:把要换的 kernel 调用(如 forward:319 的 `sparse_attn_tilelang(...)`)抽成一个几行的 hook 方法(additive、可上游),AMD 子类只 override 这个 hook → 零重复、零散 if-hip。
-   - **为什么现在不做**:mhc / cast_back 回归真 tile_kernels、Liger 回退后,只剩 **1 处 import 分叉**:`compressor.py` 的 precision_aligned(hipblas 无 bf16-in/fp32-out gemm)是 load-bearing —— subclass 为继承而 import 共享类时会连锁触发那个 gemm,ROCm 上 import 即崩,只有那个 `if hip` gate 拦着。spec/subclass 是**运行时**、晚于 import,**碰不到这处 import gate**(q_rmsnorm/ce forward 调用已回退成 NV torch,mhc/cast_back 已两平台同一 import,都不再分叉)。→ 现在建平行入口纯属零收益。
+   - **为什么现在不做**:mhc / cast_back 回归真 tile_kernels、precision 收成 forward 内联分支、Liger 回退后,**已经没有任何 import 分叉了**(mhc/cast_back 两平台无条件 import tile_kernels;precision 的 `torch.version.hip` 判断在 forward 运行时、不在 import)。也就没有"forward 级 AMD kernel 变体"需要 spec/subclass 去隔离 —— 现在建平行入口无对象、纯零收益。
    - **什么时候值得做**:当 AMD 开始有**整份不同的 forward 级大 kernel**要换(Triton / FlyDSL 重写 sparse_attn / indexer,即 `amd/.../kernel/sparse_attn_amd.py` 这类)。那些是 forward 里的 kernel 调用、不是 import gate,subclass+hook 是最干净的 swap 点,且能一次容纳多个大 kernel,平行入口的成本才摊得平。
-4. **【待 Xinyu 亲自实测】把 `precision_aligned_ops.py` 的 ROCm fallback 研究透 —— hipblas 到底能不能 `torch.mm(bf16, bf16.t(), out_dtype=fp32)`。** 当前 `amd/models/deepseek_v4/precision_aligned_ops.py` 是整份 mirror `ops/kernel/precision_aligned_ops.py`,唯一 diff 就是 forward 那一行:NV 走 `torch.mm(x_2d, w.t(), out_dtype=torch.float32)`(cublas bf16-in/fp32-out),AMD 退成 `torch.mm(x_2d.float(), w.t().float())`(纯 fp32)。当时的判断是"hipblas 不支持 bf16-in/fp32-out gemm"(E26),但**没系统实测坐实** —— 要自己在 gfx950 上跑一个最小复现:
-   - 直接 `torch.mm(a_bf16, b_bf16, out_dtype=torch.float32)` 到底报什么错 / 还是静默走别的路?换 `torch.matmul` / `torch.addmm` / 显式 `out=` 有没有区别?ROCm/hipBLASLt 版本相关吗?
-   - **对 diff**:纯 fp32 matmul vs cublas bf16-in/fp32-accum,数值差多少(此处是 compressor parity-critical 路径,`linear_bf16_fp32` 要和 SGLang rollout 的 compressor norm 对齐)。JOURNEY 里记的是"数值 ≥ bf16-accum",但要自己量一遍 relerr。
-   - **产出**:确认 fallback 是否必要 / 有没有更省的写法(比如 hipBLASLt 新版已支持就能去掉 mirror,主线 `precision_aligned_ops.py` 回 byte-for-byte 上游、这个 amd 文件删掉)。目标是**要么坐实必须 fallback、要么消掉这处 mirror**。
+4. **【✅ 已完成 2026-07-09】precision fallback 已实测坐实 + mirror 已消掉。** gfx950/ROCm 7.0(torch 2.9.0a0)上 `torch.mm(bf16, bf16, out_dtype=torch.float32)` 被 PyTorch dispatch 硬拒绝(`RuntimeError: gemm input type at::BFloat16 and output type float is not supported for ROCm`,3 种 compressor 形状全挂;不是硬件限制,是 torch ROCm 后端没接 `out_dtype`)。→ fallback **确实必须**。做法不是留独立 mirror,而是**合进** `ops/kernel/precision_aligned_ops.py`:forward 里一行 `torch.version.hip` 分支(ROCm 先 `.float()` 再 fp32 matmul,NV 走原 cublas 行不变),backward 共享。**独立 amd mirror 文件删除**,`amd/models/deepseek_v4/` 清空。数值:ROCm 分支与 fp32 参考 bit-exact、和 NV cublas bf16-in/fp32-accum 数学等价(同 bf16 舍入输入 + fp32 累加)。
 
 ## 优化路线图(已完成实测 + 待办)
 

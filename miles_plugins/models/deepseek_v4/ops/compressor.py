@@ -6,13 +6,9 @@ from torch.nn import Linear
 
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
 
-# linear_bf16_fp32: NV uses cublas bf16-in/fp32-out gemm; ROCm hipblas lacks it, so on
-# ROCm dispatch to the in-tree hand-maintained mirror (fp32 matmul). Same platform-gate
-# idiom as qat.py / hyper_connection.py. NV keeps the original kernel byte-for-byte.
-if torch.version.hip is not None:
-    from miles_plugins.amd.models.deepseek_v4.precision_aligned_ops import linear_bf16_fp32
-else:
-    from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
+# linear_bf16_fp32 handles the ROCm gemm limitation inline (NV cublas bf16-in/fp32-out vs
+# ROCm fp32 upcast); see its forward. NV runtime path is unchanged.
+from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
 
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
