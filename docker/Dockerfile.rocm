@@ -96,15 +96,10 @@ RUN GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} \
 
 RUN pip install flash-linear-attention==0.4.2
 
-# tile_kernels (deepseek-ai/TileKernels): real TileLang mHC + FP8 cast-back kernels on gfx950.
-# Build-time patches, all removable once the base image's tilelang/tile_kernels ship the fixes:
-#  - __init__/modeling seds: lazy-import; skip engram's eager import (missing TL_DISABLE_OUT_OF_BOUND
-#    _WARNING enum in this tilelang) that otherwise crashes at `import tile_kernels`.
-#  - post_kernel sed: drop mhc_post's T.pdl_sync() (Hopper grid-sync launch opt; no-op math, no ROCm impl).
-#  - hip_fp8.h seds: fp8_e{4,5}_t::operator float()'s static_cast<float> selects the ROCm SDK host-only
-#    operator on gfx950 OCP fp8 -> device-uncompilable; convert on-device via __hip_cvt_fp8_to_halfraw
-#    (symmetric with the float->fp8 setter). Unblocks the FP8 QAT cast-back. Fix pending upstream in our
-#    tilelang fork PR; drop the two hip_fp8 seds once it lands in the base image's tilelang.
+# Enable deepseek-ai/TileKernels on ROCm/gfx950 for mHC and FP8 QAT cast-back.
+# These temporary build-time patches make tile_kernels import lazy, remove CUDA/Hopper-only PDL from mhc_post,
+# and fix TileLang's HIP fp8->float conversion to use ROCm device intrinsics instead of the SDK host-only operator.
+# Drop these patches once the corresponding tilelang/tile_kernels fixes land in the base image.
 RUN pip install --no-deps tile_kernels==1.0.0 && \
     TK=/opt/venv/lib/python3.10/site-packages/tile_kernels && \
     sed -i '/^import tilelang$/d; /^from \. import ($/,/^)$/d' "$TK/__init__.py" && \
