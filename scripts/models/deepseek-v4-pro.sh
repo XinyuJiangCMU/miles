@@ -60,7 +60,6 @@ MODEL_ARGS=(
     --moe-token-dispatcher-type alltoall
     --moe-aux-loss-coeff 0
     --moe-grouped-gemm
-    --moe-permute-fusion
     --moe-router-topk-scaling-factor 2.5
 
     # DSV4 specific
