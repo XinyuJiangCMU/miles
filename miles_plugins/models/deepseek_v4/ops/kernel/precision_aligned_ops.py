@@ -18,9 +18,7 @@ class _BFloat16LinearFP32Func(torch.autograd.Function):
 
         x_2d = x_bf16.reshape(-1, x_bf16.shape[-1])
         if torch.version.hip is not None:
-            # ROCm rejects torch.mm(bf16, bf16, out_dtype=fp32) ("gemm input type BFloat16 and
-            # output type float is not supported for ROCm"), so upcast to fp32 first: same
-            # bf16-rounded inputs + fp32 accumulate, numerically matches the cublas path below.
+            # ROCm lacks bf16-in/fp32-out GEMM, so upcast bf16-rounded inputs to fp32 first to match the CUDA/cublas fp32-accumulate path.
             out = torch.mm(x_2d.float(), weight_bf16.t().float())
         else:
             out = torch.mm(x_2d, weight_bf16.t(), out_dtype=torch.float32)
