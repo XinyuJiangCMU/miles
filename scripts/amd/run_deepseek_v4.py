@@ -4,6 +4,7 @@ DeepSeek V4 training script.
 Supports:
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
+                                  Verified full-model profile: 4 nodes x 8 GPUs on MI355X (gfx950).
   - DeepSeek-V4-Flash-FP8-4layer  4-layer prune of the above for single-node
                                   smoke testing. **Cannot generate meaningful output -
                                   pipeline-only sanity check.**
@@ -20,10 +21,10 @@ Usage patterns:
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-spmd     --model-name DeepSeek-V4-Flash-FP8 \
-           --num-nodes 8 --num-gpus-per-node 8
+           --num-nodes 1 --num-gpus-per-node 8
        python scripts/run_deepseek_v4.py prepare-cp       --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py train            --model-name DeepSeek-V4-Flash-FP8 \
-           --num-nodes 8 --num-gpus-per-node 8 \
+           --num-nodes 4 --num-gpus-per-node 8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
 """
 
@@ -78,10 +79,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     actor_num_nodes: int = field(init=False)
     actor_num_gpus_per_node: int = field(init=False)
     rollout_num_gpus: int = field(init=False)
-    enable_mtp: bool = False
     optimizer_offload: bool = True
     use_fault_tolerance: bool = True
-    cp_size: int = 1
 
     # debug configs
     dump_details: bool = False
@@ -115,8 +114,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.rollout_num_gpus = self.num_nodes * self.num_gpus_per_node
         else:
             self.rollout_num_gpus = self.rollout_num_nodes * self.num_gpus_per_node
-        if self.model_name == "DeepSeek-V4-Flash-FP8-4layer":
-            self.skip_saving = True
 
     @property
     def megatron_model_type(self):
@@ -204,13 +201,11 @@ def _prepare_spmd(args: ScriptArgs):
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         )
-    elif actor_num_nodes == 8 and args.model_name == "DeepSeek-V4-Flash-FP8":
+    elif actor_num_nodes == 1 and args.model_name == "DeepSeek-V4-Flash-FP8":
         extra_args += (
             "--tensor-model-parallel-size 1 "
-            "--pipeline-model-parallel-size 8 "
-            "--expert-model-parallel-size 4 "
-            "--decoder-first-pipeline-num-layers 7 "
-            "--decoder-last-pipeline-num-layers 6 "
+            "--pipeline-model-parallel-size 1 "
+            "--expert-model-parallel-size 8 "
         )
     else:
         raise NotImplementedError(
@@ -290,17 +285,6 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--pipeline-model-parallel-size 4 "
                 "--decoder-first-pipeline-num-layers 11 "
                 "--decoder-last-pipeline-num-layers 10 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
-            )
-        if total_gpus == 64:  # 8 nodes x 8 GPUs
-            return (
-                "--tensor-model-parallel-size 8 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 8 "
-                "--decoder-first-pipeline-num-layers 4 "
-                "--decoder-last-pipeline-num-layers 3 "
                 "--context-parallel-size 1 "
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
@@ -428,19 +412,30 @@ def _train(args: ScriptArgs):
         "--sglang-disable-cuda-graph "
         "--sglang-dsa-topk-backend torch "
     )
-    if args.enable_mtp:
-        sglang_args += (
-            "--sglang-speculative-algorithm EAGLE "
-            "--sglang-speculative-num-steps 3 "
-            "--sglang-speculative-eagle-topk 1 "
-            "--sglang-speculative-num-draft-tokens 4 "
-        )
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
+        # ROCm/gfx950 rollout kernel knobs
+        "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
+        "SGLANG_FP8_PAGED_MQA_LOGITS_TORCH": "1",
+        "SGLANG_DSA_TOPK_BROADCAST": "1",
+        "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
+        "SGLANG_OPT_USE_AITER_INDEXER": "false",
+        "SGLANG_OPT_USE_TILELANG_MHC_PRE": "false",
+        "SGLANG_OPT_USE_TILELANG_MHC_POST": "false",
+        "SGLANG_OPT_DEEPGEMM_HC_PRENORM": "false",
+        "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
+        "SGLANG_OPT_USE_FUSED_COMPRESS_TRITON": "true",
+        "SGLANG_OPT_USE_JIT_INDEXER_METADATA": "false",
+        "SGLANG_OPT_USE_TOPK_V2": "false",
+        "SGLANG_OPT_USE_COMPRESSOR_V2": "false",
+        "SGLANG_OPT_USE_MULTI_STREAM_OVERLAP": "false",
+        "SGLANG_ROCM_USE_MULTI_STREAM": "false",
+        "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": "0",
+        "AITER_BF16_FP8_MOE_BOUND": "0",
     }
 
     misc_args = (
@@ -507,7 +502,7 @@ def _train(args: ScriptArgs):
 
     if args.fp8_training:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-        # gfx950 uses Hopper-style blockwise FP8 with fp32 scales.
+        # gfx950 uses blockwise FP8 with fp32 scales.
         misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"1"}' """
         # ROCm TE MoE FP8 lacks fused wgrad accumulation; disable the fusion.
         misc_args += "--no-gradient-accumulation-fusion "
