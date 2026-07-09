@@ -437,6 +437,7 @@ R1–R9 做完后 profile 当前 run(steady-decode profiler、wandb `perf/*`、r
 ### 扩展 / 根本解
 - [ ] 上 **8 节点官方配置(PP8)**,一次拿回所有 headroom(4 节点显存双紧的根本解)。
 - [ ] 用长 token 预算(如 32768)重测 eval,看 V4 真实 AIME 分数(现被 4096 上限压低)。
+- [ ] **把 response length 加到 16k**(`--rollout-max-response-len` 训练 / `--eval-max-response-len` eval;现 4096)。注意:16k 是**生成长度**上限,不是叫 "context length" 的东西;总 context = prompt+response,容量闸是 `--sglang-max-total-tokens`(现 1M 够)。⚠️ **OOM 风险高**:4k 时显存已 ~97%,response 4k→16k 会让 KV cache ~4x(rollout 几百条并发序列各占到 16k)→ 必炸。**先决条件**:要么降并发/`--sglang-mem-fraction-static`、要么上 8 节点(见「上 8 节点 PP8」)。建议**先只把 eval 设 16k**(并发可控、只为拿真 AIME 分数),训练侧 16k 等 headroom 解决后再上。
 - [ ] 重开 indexer-replay(改 rollout 为 attn_tp=1 对齐 NV;需去 `attn_tp==1` assert + rank0 广播 top-k)。
 
 ### 其他 / 环境
@@ -539,6 +540,8 @@ docker run -d --name <CONTAINER> \
 
 > ⚠️ 高频初见坑:`docker run` 完 verbs 设备在、但 `ibv_devices` 列出**空**、报 `Driver ionic does not support the kernel ABI` = 容器内 RDMA 用户态 provider 跟宿主机内核 ABI 不匹配(**不是 NCCL 配错**)。解法:把容器内 provider 库换成宿主机那份(`rdma-core` 版本对得上)+ `ldconfig`。此修法**按容器**、重建即失效、每次 `docker run` 后重打。注:`--device /dev/infiniband`(传目录)不行,必须逐个 uverbs 设备。
 
+> ⚠️ **节点异构比修 provider 更值得先查**(2026-07-09 实测):某台 `ionic` 内核 ABI 或 NIC 数和其他机不一样(遇到过 node-2 = ABI 1 / 8 NIC,其余 = ABI 4 / 9 NIC)→ 容器内 `ibv_devices` 空 + `NCCL_IB_HCA` 固定列表(排 `ionic_6`、要 `ionic_8`)对不上。**换一台同构的节点(如 node-8)最省事** —— 免 per-container provider surgery + 免给这台单配 HCA 列表。选节点时先 `ls /sys/class/infiniband | grep -c ionic`(数一致)再用。
+
 **4.4 清 Ray 端口.** Ray 用 6379(GCS)、8265(job server);`--network host` 下这俩被本机所有容器共享,别的容器残留旧 Ray 会截胡。起 Ray 前先查空:
 
 ```bash
@@ -571,6 +574,36 @@ docker exec -i \
 **4.6 提交训练**(只在 head 节点):设 `MILES_SCRIPT_EXTERNAL_RAY=1`(挂到已有 Ray 集群、别自己另起)+ `WANDB_API_KEY`,跑 `run_deepseek_v4.py`(或对应 `run_*.py`)。**健康序列**:引擎 ready + `/health` 200 → Megatron 加载 torch_dist ckpt + Gloo 各 rank 连上 → `update_weights` 成功 → rollout 出 reward → **第一个 step 的 `grad_norm` 出现(= 跨节点 all-reduce 真跑通)** → `Job succeeded`。
 
 **踩坑速记**:①`pkill -f "docker save ..."` 会自匹配杀掉自己的 shell → 用数字 PID 或 `pkill -x`;②重建容器丢掉运行时的 wip 分支 + liger + 并行档(新容器 = image 的 main 分支)→ 容器内 setup 必须重做;③设备传进去 ≠ 能用,`ibv_devices` 空 = provider/ABI 不匹配(见 4.3)。
+
+### 4.7 照着跑:本次 4-node full-train 的确切参数(2026-07-09 实测)
+
+> 起集群的机械步骤(网卡/RDMA/容器/Ray)不重复,照 4.1–4.6;这里只补上面没有的**本次确切值 + 提交命令 + 显存配平**。
+
+- **集群** `{4,6,8,9}` head=node-4(mgmt IP:4=172.30.160.111 / 6=.201 / 8=.126 / 9=.127)· **镜像** `xinyujiangcmu/miles:rocm700-mi35x-tilekernels-hipfp8-20260709` · **代码** fork `wip/dsv4-flash-full-train-20260701`(容器内 `git fetch && checkout -f FETCH_HEAD`,验 `bias_activation_fusion=False`、`cast_back.py` 已删)。
+- **选节点铁律**:只用 `ls /sys/class/infiniband | grep -c ionic` **= 9** 的(异构 ABI/NIC → 容器内 `ibv_devices` 空,见 4.3;换同构节点最省事)。
+- **提交训练**(只在 head;`MODEL_DIR`/`ref-load` 走**本地 NVMe** `/workspace/models`,NFS 太慢):
+  ```bash
+  docker exec -d -e WANDB_API_KEY=... dsv4-train bash -lc '
+    source /opt/shared/hai/dsv4_env.sh; export PYTHONBUFFERED=16
+    cd /root/miles && export PYTHONPATH=/root/miles
+    python scripts/run_deepseek_v4.py train \
+      --model-name DeepSeek-V4-Flash-FP8 \
+      --hf-checkpoint /workspace/models/DeepSeek-V4-Flash-FP8 \
+      --model-dir /workspace/models --model-local-dir /workspace/models \
+      --data-dir /opt/shared/hai/datasets \
+      --num-nodes 4 --num-gpus-per-node 8 --skip-saving \
+      --extra-args "--sglang-mem-fraction-static 0.6 --distributed-timeout-minutes 120" \
+      > /workspace/train_4node.log 2>&1'
+  ```
+  自动档:TP8/PP4/EP8、colocate、fp8 e4m3 blockwise、skip-save。
+- **⚠️ 用 `train` 不用 `full-train`**:full-train 查不到 bf16 目录会重跑 `fp8_cast_bf16`(转整个 291B ~600GB 撑爆盘);`train` 跳过所有 prepare、直接用现成 `*_torch_dist`。
+- **⚠️ 4 节点显存双紧,两个旋钮配平**:
+  - `--sglang-mem-fraction-static 0.6`(extra-args 覆盖代码默认 0.7)—— sglang 给 KV 预留的 VRAM 比例。**0.7 会 step-1 `resume_memory_occupation` OOM**(step-0 出 grad_norm 后首次优化器状态物化 → resume sglang 显存不够);降 0.6 给 actor 让显存。
+  - `--optimizer-offload-fraction 0.75`(`run_deepseek_v4.py` 自动,配 `--no-offload-train`)—— 优化器状态**只 offload 0.75 到 CPU、留 0.25 在 GPU**(非全 offload)。**0.66 太少 → OOM/coredump**;0.75 留 ~16GB headroom。
+  - 根本解 = 上 8 节点 PP8(更多卡分摊,免这么抠)。
+8. **看**:`[head] docker exec dsv4-train tail -f /workspace/train_4node.log`;WandB `miles-run_deepseek_v4`。首步 log_probs/actor_train 会 JIT 编译几分钟(hipcc,缓存后重跑快);GPU 瞬时 0% = collective 同步 / 编译,持续全 0%+CPU 低才是 hang。
+
+**两个必踩坑**:①**节点异构**(ionic ABI/NIC 数不同,node-2=ABI1/8NIC)→ 容器内 `ibv_devices` 空 → 换同构节点(ionic=9)最省事;②**用 `full-train` 会重转模型**:它查不到 bf16 目录就重跑 `fp8_cast_bf16`(转整个 291B ~600GB 撑爆盘)→ 用 `train` 子命令跳过 prepare、直接用现成 `*_torch_dist`。
 
 ---
 
