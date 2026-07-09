@@ -167,6 +167,17 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
 
+# ====================================== Triton 3.7 =============================================
+# Install AMD-matched Triton 3.7 + triton-kernels for DSA paged-MQA preshuffle decode; base Triton 3.4 is too old.
+ARG TRITON_VER=3.7.0+amd.rocm7.0.0.gitd0d77a509
+ARG TRITON_KERNELS_VER=1.0.0+amd.rocm7.0.0.gitd0d77a509
+RUN pip install --extra-index-url https://pypi.amd.com/triton/release_/rocm-7.0.0/simple/ \
+      "triton==${TRITON_VER}" "triton-kernels==${TRITON_KERNELS_VER}"
+
+# Patch torch inductor to tolerate Triton 3.6+ metadata changes; remove once the base image ships matched torch + Triton.
+RUN F="$(python -c 'import torch,os;print(os.path.dirname(torch.__file__))')/_inductor/runtime/triton_heuristics.py" && \
+    sed -i 's#(binary\.metadata\.num_ctas, \*binary\.metadata\.cluster_dims)#(getattr(binary.metadata, "num_ctas", 1), *getattr(binary.metadata, "cluster_dims", ()))#' "$F"
+
 # ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
