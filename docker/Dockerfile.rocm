@@ -58,12 +58,14 @@ ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 COPY docker/amd_patch/latest/megatron.patch /tmp/amd_patch/megatron.patch
 COPY docker/amd_patch/latest/miles.patch /tmp/amd_patch/miles.patch
 COPY docker/amd_patch/latest/sglang_attn_bridge /tmp/amd_patch/sglang_attn_bridge
+COPY docker/amd_patch/latest/tile_kernels.patch /tmp/amd_patch/tile_kernels.patch
+COPY docker/amd_patch/latest/tilelang_hip_fp8.patch /tmp/amd_patch/tilelang_hip_fp8.patch
 COPY requirements.txt /tmp/requirements.txt
 
 # ======================================== Apt dependencies =====================================
 RUN apt update
 # Install build tools and diagnostics utilities.
-RUN apt install -y build-essential cmake dnsutils ethtool git nvtop rsync
+RUN apt install -y build-essential cmake dnsutils ethtool git nvtop patch rsync
 
 # Build rccl-tests diagnostics binaries.
 RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/rocm-systems && \
@@ -95,13 +97,8 @@ RUN pip install flash-linear-attention==0.4.2
 # and fix TileLang's HIP fp8->float conversion to use ROCm device intrinsics instead of the SDK host-only operator.
 # Drop these patches once the corresponding tilelang/tile_kernels fixes land in the base image.
 RUN pip install --no-deps tile_kernels==1.0.0 && \
-    TK=/opt/venv/lib/python3.10/site-packages/tile_kernels && \
-    sed -i '/^import tilelang$/d; /^from \. import ($/,/^)$/d' "$TK/__init__.py" && \
-    sed -i '/^from \. import engram$/d; /^from \. import mhc$/d' "$TK/modeling/__init__.py" && \
-    sed -i '/T\.pdl_sync()/d' "$TK/mhc/post_kernel.py" && \
-    TLH=/opt/tilelang/src/tl_templates/hip/hip_fp8.h && \
-    sed -i 's|    return static_cast<float>(static_cast<hip_fp8_e4_t>(\*this));|    constexpr __hip_fp8_interpretation_t interp =\n#if (TILELANG_FP8_E4M3_VARIANT == TILELANG_FP8_E4M3_VARIANT_FNUZ)\n        __HIP_E4M3_FNUZ;\n#else\n        __HIP_E4M3;\n#endif\n    return __half2float(__half(__hip_cvt_fp8_to_halfraw(data, interp)));|' "$TLH" && \
-    sed -i 's|    return static_cast<float>(static_cast<hip_fp8_e5_t>(\*this));|    constexpr __hip_fp8_interpretation_t interp =\n#if (TILELANG_FP8_E5M2_VARIANT == TILELANG_FP8_E5M2_VARIANT_FNUZ)\n        __HIP_E5M2_FNUZ;\n#else\n        __HIP_E5M2;\n#endif\n    return __half2float(__half(__hip_cvt_fp8_to_halfraw(data, interp)));|' "$TLH"
+    patch -p1 -d /opt/venv/lib/python3.10/site-packages < /tmp/amd_patch/tile_kernels.patch && \
+    patch -p1 -d /opt/tilelang/src/tl_templates/hip < /tmp/amd_patch/tilelang_hip_fp8.patch
 
 RUN rm -rf /root/Megatron-LM && \
     git clone --recursive -b ${MEGATRON_BRANCH} https://github.com/${MEGATRON_REPO}.git /root/Megatron-LM && \
