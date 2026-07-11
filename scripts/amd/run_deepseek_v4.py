@@ -406,34 +406,26 @@ def _train(args: ScriptArgs):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
-        # gfx950: DSv4 sgl-kernel topk_v2 is CUDA-only -> route DSA topk through torch + disable cuda-graph.
+        # gfx950: cuda-graph disabled pending validation that DSv4 topk_transform_512 (ROCm compiled kernel) is graph-safe.
+        # NOTE: DSv4-Flash top-k runs the ROCm-registered deepseek_v4_topk_transform_512 op, NOT torch; the sglang
+        # --dsa-topk-backend flag only affects the DSv3.2-DSA path and is inert here, so it is intentionally not set.
         "--sglang-disable-cuda-graph "
-        "--sglang-dsa-topk-backend torch "
     )
     extra_env_vars = {
-        "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
-        "SGLANG_DSV4_FP4_EXPERTS": "0",
-        "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
-        "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
-        "SGLANG_OPT_FP8_WO_A_GEMM": "0",
-        # ROCm/gfx950 rollout kernel knobs
-        "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
-        "SGLANG_FP8_PAGED_MQA_LOGITS_TORCH": "1",
-        "SGLANG_DSA_TOPK_BROADCAST": "1",
-        "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
-        "SGLANG_OPT_USE_AITER_INDEXER": "false",
-        "SGLANG_OPT_USE_TILELANG_MHC_PRE": "false",
-        "SGLANG_OPT_USE_TILELANG_MHC_POST": "false",
-        "SGLANG_OPT_DEEPGEMM_HC_PRENORM": "false",
-        "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
-        "SGLANG_OPT_USE_FUSED_COMPRESS_TRITON": "true",
-        "SGLANG_OPT_USE_JIT_INDEXER_METADATA": "false",
-        "SGLANG_OPT_USE_TOPK_V2": "false",
-        "SGLANG_OPT_USE_COMPRESSOR_V2": "false",
-        "SGLANG_OPT_USE_MULTI_STREAM_OVERLAP": "false",
-        "SGLANG_ROCM_USE_MULTI_STREAM": "false",
-        "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": "0",
-        "AITER_BF16_FP8_MOE_BOUND": "0",
+        # -- checkpoint / expert layout (load-bearing for the FP8-repackaged DSv4-Flash ckpt) --
+        "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",   # skip strict load-format validation for the repackaged ckpt
+        "SGLANG_DSV4_FP4_EXPERTS": "0",             # FP8 routed-expert layout (env default is mxfp4); also disables auto-detect
+        # -- rollout kernel selection on gfx950 (each flips a default; verified load-bearing) --
+        "SGLANG_HACK_FLASHMLA_BACKEND": "triton",   # sparse-MLA decode kernel (default "tilelang")
+        "SGLANG_OPT_USE_TILELANG_INDEXER": "true",  # indexer-logits kernel = tilelang (default False -> HIP-forced aiter)
+        "SGLANG_OPT_USE_COMPRESSOR_V2": "false",    # HIP compressor v1 (NEEDS-TEST vs v2); gates USE_FUSED_COMPRESS below
+        "SGLANG_OPT_USE_FUSED_COMPRESS": "true",    # v1 CompressorHip fused path -- live *because* COMPRESSOR_V2=false
+        # -- infra --
+        "SGLANG_HEALTH_CHECK_TIMEOUT": "120",       # 20->120s: tolerate slow ROCm warmup / aiter GEMM tune under colocate
+        "AITER_BF16_FP8_MOE_BOUND": "0",            # aiter-internal MoE bf16<->fp8 bound; kept for DSv4-Flash-FP8 test parity
+        # NOTE: 13 other SGLANG_OPT_* knobs dropped as inert on DSv4-Flash/gfx950 -- either force-set to the same
+        # value by the server_args DeepseekV4+is_hip block (~3821-3832), equal to the platform default, on a CUDA-only
+        # path, or unread (FUSED_COMPRESS_TRITON hardcodes False; DSA_TOPK_BROADCAST is DSv3.2-only). See JOURNEY.
     }
 
     misc_args = (
@@ -445,7 +437,7 @@ def _train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
-        "--sglang-mem-fraction-static 0.7 "
+        "--sglang-mem-fraction-static 0.6 "  # 4-node colocate: leave VRAM for train weights (was overridden to 0.6 via launcher)
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load

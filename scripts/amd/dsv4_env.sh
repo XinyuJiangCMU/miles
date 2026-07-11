@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sourced by head + worker. Full DSv4-Flash FP8 rollout env (from the 4-layer amd
 # script) + multi-node RoCE/RCCL env (from dsv4-4node-probe.md).
-export MASTER_ADDR=172.30.160.201          # node-6 (ray head, this run)
+export MASTER_ADDR=${MASTER_ADDR:-172.30.160.111}   # ray head mgmt IP (default node-4); override per deployment: MASTER_ADDR=<ip>
 export MILES_SCRIPT_EXTERNAL_RAY=1          # we start ray head/workers ourselves
 
 # --- Ray 心跳放宽（playbook §4.5：防 fabric 抖动误判节点死）---
@@ -37,7 +37,6 @@ export SGLANG_OPT_USE_TOPK_V2=false
 export SGLANG_OPT_USE_AITER_INDEXER=false
 export SGLANG_OPT_USE_TILELANG_MHC_PRE=false
 export SGLANG_OPT_USE_TILELANG_MHC_POST=false
-export SGLANG_FP8_PAGED_MQA_LOGITS_TORCH=1
 export SGLANG_OPT_USE_MULTI_STREAM_OVERLAP=false
 export SGLANG_ROCM_USE_MULTI_STREAM=false
 export AITER_BF16_FP8_MOE_BOUND=0
