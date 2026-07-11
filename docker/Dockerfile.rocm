@@ -33,8 +33,8 @@ ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
 ARG RCCL_TESTS_BRANCH=develop
 ARG RCCL_TESTS_PATH=projects/rccl-tests
 
-ARG TRANSFORMER_ENGINE_REPO=https://github.com/JessicaJiang-123/TransformerEngine.git
-ARG TRANSFORMER_ENGINE_BRANCH=amd-qwen3-30b-a3b-fp8-dev
+ARG TRANSFORMER_ENGINE_REPO=https://github.com/XinyuJiangCMU/TransformerEngine.git
+ARG TRANSFORMER_ENGINE_BRANCH=miles-te-pow2-20260711
 
 # ======================================== Setup ================================================
 WORKDIR /root/
