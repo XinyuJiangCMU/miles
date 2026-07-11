@@ -10,14 +10,15 @@
 # 3. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
 #    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 
-ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
-ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
+ARG SGLANG_IMAGE_REPO=rocm/sgl-dev
+ARG SGLANG_IMAGE_TAG=v0.5.14-rocm700-mi35x-20260627
 FROM ${SGLANG_IMAGE_REPO}:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
 # ======================================== Arguments ============================================
-ARG SGLANG_BRANCH=sglang-miles
+ARG SGLANG_REPO=https://github.com/XinyuJiangCMU/sglang.git
+ARG SGLANG_BRANCH=wip/dsv4-flash-rollout-speedup-20260711-sglang-miles
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
@@ -32,8 +33,8 @@ ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
 ARG RCCL_TESTS_BRANCH=develop
 ARG RCCL_TESTS_PATH=projects/rccl-tests
 
-ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
-ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
+ARG TRANSFORMER_ENGINE_REPO=https://github.com/JessicaJiang-123/TransformerEngine.git
+ARG TRANSFORMER_ENGINE_BRANCH=amd-qwen3-30b-a3b-fp8-dev
 
 # ======================================== Setup ================================================
 WORKDIR /root/
@@ -108,7 +109,7 @@ RUN rm -rf /root/Megatron-LM && \
 
 RUN cd /sgl-workspace/sglang && \
     git reset --hard && \
-    git fetch origin ${SGLANG_BRANCH} && \
+    git fetch ${SGLANG_REPO} ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \
     else \
@@ -147,6 +148,17 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     mkdir -p miles/backends/experimental/fsdp_utils/sglang_attn_bridge && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
+
+# ====================================== Triton 3.7 =============================================
+# Install AMD-matched Triton 3.7 + triton-kernels for DSA paged-MQA preshuffle decode; base Triton 3.4 is too old.
+ARG TRITON_VER=3.7.0+amd.rocm7.0.0.gitd0d77a509
+ARG TRITON_KERNELS_VER=1.0.0+amd.rocm7.0.0.gitd0d77a509
+RUN pip install --extra-index-url https://pypi.amd.com/triton/release_/rocm-7.0.0/simple/ \
+      "triton==${TRITON_VER}" "triton-kernels==${TRITON_KERNELS_VER}"
+
+# Patch torch inductor to tolerate Triton 3.6+ metadata changes; remove once the base image ships matched torch + Triton.
+RUN F="$(python -c 'import torch,os;print(os.path.dirname(torch.__file__))')/_inductor/runtime/triton_heuristics.py" && \
+    sed -i 's#(binary\.metadata\.num_ctas, \*binary\.metadata\.cluster_dims)#(getattr(binary.metadata, "num_ctas", 1), *getattr(binary.metadata, "cluster_dims", ()))#' "$F"
 
 # ====================================== Install sgl-model-gateway ============================================
 ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
