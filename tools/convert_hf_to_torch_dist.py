@@ -55,7 +55,12 @@ def get_args():
     def ceildiv(a, b):
         return -(a // -b)
 
-    if args.pipeline_model_parallel_size == 1 and world_size > 1:
+    # Only auto-derive pipeline parallelism for the dense (non-MoE) path. With expert parallelism
+    # (expert_model_parallel_size > 1), EP already consumes the world_size, so forcing PP=world_size
+    # here makes expert_tensor(1) * expert_model(EP) * pipeline(world) exceed world_size and Megatron's
+    # initialize_model_parallel raises "world_size is not divisible by expert_tensor_model_pipeline...".
+    # For MoE, keep the caller-provided PP (e.g. PP=1, EP=8 on 8 GPUs -> 1*8*1 == world_size).
+    if args.pipeline_model_parallel_size == 1 and world_size > 1 and args.expert_model_parallel_size == 1:
         pp_size = world_size
         while True:
             args.pipeline_model_parallel_size = pp_size
