@@ -58,6 +58,7 @@ VARIANTS = {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
             "SGLANG_IMAGE_TAG": "v0.5.14-rocm700-mi35x-20260627",
+            "WHEELS_TAG_ROCM": "rocm700-gfx950-v0.5.14",
         },
     },
     "rocm700-mi30x": {
@@ -77,7 +78,9 @@ VARIANTS = {
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
             "GPU_ARCH": "gfx950",
-            "SGLANG_IMAGE_TAG": "v0.5.10-rocm720-mi35x",
+            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
+            "SGLANG_IMAGE_TAG": "v0.5.14-rocm720-mi35x-20260627",
+            "WHEELS_TAG_ROCM": "rocm720-gfx950-v0.5.14",
         },
     },
 }

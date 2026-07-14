@@ -35,6 +35,13 @@ ARG RCCL_TESTS_PATH=projects/rccl-tests
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
 ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
 
+# Prebuilt ROCm wheels (Transformer Engine + flash-attn + sgl-model-gateway), mirroring the NV
+# wheels flow in docker/Dockerfile. build.py sets WHEELS_TAG_ROCM per gfx arch; the tag must embed
+# GPU_ARCH (e.g. rocm700-gfx950-v0.5.14). When the tag does not match GPU_ARCH the build falls back
+# to compiling from source, so arches without a published wheel (e.g. gfx942) still build.
+ARG WHEELS_REPO=XinyuJiangCMU/miles-wheels-rocm
+ARG WHEELS_TAG_ROCM=rocm700-gfx950-v0.5.14
+
 # ======================================== Setup ================================================
 WORKDIR /root/
 
@@ -77,18 +84,30 @@ RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/ro
     rm -rf /tmp/rocm-systems
 
 # ====================================== Python dependencies ====================================
-# Install Transformer Engine from the requested branch. NVTE_FUSED_ATTN=0 is scoped to
-# this build step only (skip the extra fused-attn kernel matrix rebuild), not the runtime env.
+# Transformer Engine + flash-attn: prefer the prebuilt ROCm wheels from the WHEELS_TAG_ROCM release
+# when it matches GPU_ARCH; otherwise compile from source (the original path). NVTE_FUSED_ATTN=0 is
+# scoped to the source build only (skip the extra fused-attn kernel matrix rebuild), not runtime.
 RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true
-RUN rm -rf /root/TransformerEngine && \
-    git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
-    cd /root/TransformerEngine && \
-    NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v
+RUN if echo "${WHEELS_TAG_ROCM}" | grep -q "${GPU_ARCH}"; then \
+      mkdir -p /tmp/wheels && \
+      curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
+      | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; keep=('transformer_engine','flash_attn'); \
+[subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
+ for a in json.load(sys.stdin).get('assets',[]) if a['name'].endswith('.whl') and a['name'].startswith(keep)]" && \
+      { ls /tmp/wheels/transformer_engine-*.whl /tmp/wheels/flash_attn-*.whl >/dev/null 2>&1 \
+        || { echo "missing TE/flash-attn wheels in ${WHEELS_REPO} release ${WHEELS_TAG_ROCM}" >&2; exit 1; }; } && \
+      ls -lh /tmp/wheels/ && \
+      pip install /tmp/wheels/transformer_engine-*.whl /tmp/wheels/flash_attn-*.whl && \
+      rm -rf /tmp/wheels; \
+    else \
+      rm -rf /root/TransformerEngine && \
+      git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
+      cd /root/TransformerEngine && \
+      NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v && \
+      GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} pip -v install flash-attn==2.8.3 --no-build-isolation; \
+    fi
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
-
-RUN GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} \
-    pip -v install flash-attn==2.8.3 --no-build-isolation
 
 RUN pip install flash-linear-attention==0.4.2
 
@@ -149,22 +168,40 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     pip install -e . --no-deps
 
 # ====================================== Install sgl-model-gateway ============================================
+# Two modes (mirrors docker/Dockerfile's SGL_ROUTER_USE_WHEELS switch):
+#   =1 (default): install the prebuilt sglang_router wheel + sgl-model-gateway binary from the
+#     WHEELS_TAG_ROCM release (the gateway is a self-contained x86_64 binary, arch-independent) —
+#     no Rust toolchain build.
+#   =0: build from source with maturin/cargo (requires rustup/cargo in the base image).
+ARG SGL_ROUTER_USE_WHEELS=1
 ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
 ARG SGL_ROUTER_BRANCH=main
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     set -eux; \
-    export PATH="/root/.cargo/bin:${PATH}"; \
-    git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway && \
-    cd /build/sgl-model-gateway/bindings/python && \
-    ulimit -n 65536 && \
-    maturin build --release --features vendored-openssl --out /build/gateway_wheels && \
-    cd /build/sgl-model-gateway && \
-    cargo build --release --bin sgl-model-gateway --features vendored-openssl && \
-    cp target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
-    chmod +x /usr/local/bin/sgl-model-gateway && \
-    pip install --force-reinstall --no-deps /build/gateway_wheels/sglang_router-*.whl && \
-    rm -rf /build/sgl-model-gateway /build/gateway_wheels
+    if [ "${SGL_ROUTER_USE_WHEELS}" = "1" ]; then \
+      mkdir -p /tmp/gw && \
+      curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
+      | python3 -c "import sys,json,subprocess,os; w='/tmp/gw'; keep=('sglang_router','sgl-model-gateway'); \
+[subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
+ for a in json.load(sys.stdin).get('assets',[]) if a['name'].startswith(keep)]"; \
+      pip install --force-reinstall --no-deps /tmp/gw/sglang_router-*.whl; \
+      tar xzf /tmp/gw/sgl-model-gateway-linux-*.tar.gz -C /usr/local/bin/; \
+      chmod +x /usr/local/bin/sgl-model-gateway; \
+      rm -rf /tmp/gw; \
+    else \
+      export PATH="/root/.cargo/bin:${PATH}"; \
+      git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway; \
+      cd /build/sgl-model-gateway/bindings/python; \
+      ulimit -n 65536; \
+      maturin build --release --features vendored-openssl --out /build/gateway_wheels; \
+      cd /build/sgl-model-gateway; \
+      cargo build --release --bin sgl-model-gateway --features vendored-openssl; \
+      cp target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway; \
+      chmod +x /usr/local/bin/sgl-model-gateway; \
+      pip install --force-reinstall --no-deps /build/gateway_wheels/sglang_router-*.whl; \
+      rm -rf /build/sgl-model-gateway /build/gateway_wheels; \
+    fi
 
 # ====================================== Runtime knobs ==========================================
 
@@ -176,7 +213,9 @@ ENV SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
 ENV SGLANG_MOE_PADDING=1
 ENV SGLANG_SET_CPU_AFFINITY=1
 ENV SGLANG_ROCM_FUSED_DECODE_MLA=1
-ENV SGLANG_USE_ROCM700A=1
+# Force legacy HSA IPC to avoid the ROCm 7.2 dmabuf VRAM leak under RCCL colocate; no-op on 7.0
+# where legacy is already the default.
+ENV HSA_ENABLE_IPC_MODE_LEGACY=1
 ENV NCCL_MIN_NCHANNELS=112
 ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
 ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
