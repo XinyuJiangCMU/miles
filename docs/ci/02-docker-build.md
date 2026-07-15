@@ -34,7 +34,7 @@ The Dockerfile is the build recipe and nothing more: it knows no variants and no
 
 **Output** — one `radixark/miles` image for the platform buildx targets: the sglang base, then Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
-`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`).
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`; the 7.2 variants also set `APPLY_ROCR_VMMFIX=1`, which downloads the ROCr VMM-pause fix `.so` from the `WHEELS_TAG_ROCM` release and installs it — ROCm 7.0 has no such regression and leaves it off).
 
 ## Build script
 
