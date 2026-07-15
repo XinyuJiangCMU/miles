@@ -61,7 +61,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ] = "DeepSeek-V4-Flash-FP8"
 
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
-    enable_eval: bool = True
+    # Default OFF: 16k eval (--eval-interval 20, AIME 240 gens) takes ~14min and blocks step-0/step-20,
+    # slowing the training-flow watch. Re-enable with --enable-eval for a dedicated AIME-score run (task #15).
+    enable_eval: bool = False
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -338,13 +340,13 @@ def _train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 4096 "
+                f"--rollout-max-response-len 8192 "  # 8k = practical middle: 16k host-OOM'd on 4 nodes (ray killed worker, node-4 host RAM exhausted, ~1 step); 4k truncated 57%. 8k halves the host-RAM pressure of 16k while cutting truncation vs 4k. (real AIME 0.833 already measured via 16k eval; eval stays 16k below for that.)
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 4096 "
+                "--eval-max-response-len 16384 "  # 4k→16k: AIME needs full CoT (4k truncated 57% of answers, depressing the score)
             )
         case "gsm8k":
             rollout_args += (
@@ -406,10 +408,11 @@ def _train(args: ScriptArgs):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
-        # gfx950: cuda-graph disabled pending validation that DSv4 topk_transform_512 (ROCm compiled kernel) is graph-safe.
-        # NOTE: DSv4-Flash top-k runs the ROCm-registered deepseek_v4_topk_transform_512 op, NOT torch; the sglang
-        # --dsa-topk-backend flag only affects the DSv3.2-DSA path and is inert here, so it is intentionally not set.
-        "--sglang-disable-cuda-graph "
+        # gfx950: cuda-graph ENABLED (2026-07-14). Graph-safety validated on rocm720 (node-7 standalone: GSM8K 0.950,
+        # +2.5x = 1081 tok/gpu/s; the old topk_transform_512 concern is moot on 720). Colocate wedge risk (aiter custom-AR
+        # IPC buffer vs torch_memory_saver pause/resume, aiter #2061) is handled by SGLANG_MEMORY_SAVER_CUDA_GRAPH=1 below
+        # (routes AR through the unreg capture path). NOTE: DSv4-Flash top-k runs the ROCm-registered
+        # deepseek_v4_topk_transform_512 op, NOT torch; --dsa-topk-backend only affects DSv3.2-DSA, inert here.
     )
     extra_env_vars = {
         # -- checkpoint / expert layout (load-bearing for the FP8-repackaged DSv4-Flash ckpt) --
@@ -417,12 +420,14 @@ def _train(args: ScriptArgs):
         "SGLANG_DSV4_FP4_EXPERTS": "0",             # FP8 routed-expert layout (env default is mxfp4); also disables auto-detect
         # -- rollout kernel selection on gfx950 (each flips a default; verified load-bearing) --
         "SGLANG_HACK_FLASHMLA_BACKEND": "triton",   # sparse-MLA decode kernel (default "tilelang")
-        "SGLANG_OPT_USE_TILELANG_INDEXER": "true",  # indexer-logits kernel = tilelang (default False -> HIP-forced aiter)
+        "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
         "SGLANG_OPT_USE_COMPRESSOR_V2": "false",    # HIP compressor v1 (NEEDS-TEST vs v2); gates USE_FUSED_COMPRESS below
         "SGLANG_OPT_USE_FUSED_COMPRESS": "true",    # v1 CompressorHip fused path -- live *because* COMPRESSOR_V2=false
         # -- infra --
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",       # 20->120s: tolerate slow ROCm warmup / aiter GEMM tune under colocate
         "AITER_BF16_FP8_MOE_BOUND": "0",            # aiter-internal MoE bf16<->fp8 bound; kept for DSv4-Flash-FP8 test parity
+        # -- colocate cuda-graph (2026-07-14): deploy the standalone-verified 2.5x into training --
+        "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "1",      # route aiter custom-AR through the unreg capture path (custom_all_reduce.py:399-402) so cuda-graph capture doesn't bake a stale IPC ptr under torch_memory_saver pause/resume -> avoids the aiter #2061 GPU wedge (which would need a node reboot). REQUIRED when cuda-graph is on in colocate.
         # NOTE: 13 other SGLANG_OPT_* knobs dropped as inert on DSv4-Flash/gfx950 -- either force-set to the same
         # value by the server_args DeepseekV4+is_hip block (~3821-3832), equal to the platform default, on a CUDA-only
         # path, or unread (FUSED_COMPRESS_TRITON hardcodes False; DSA_TOPK_BROADCAST is DSv3.2-only). See JOURNEY.
@@ -478,9 +483,6 @@ def _train(args: ScriptArgs):
         misc_args += "--use-rollout-routing-replay "
         # Skip indexer-replay for now
         # misc_args += "--use-rollout-indexer-replay "
-        # Route replay through the miles python router: the Rust router drops return_routed_experts
-        # on /generate passthrough, so routed_experts never reaches the scheduler.
-        misc_args += "--use-miles-router "
 
     if args.train_deterministic:
         misc_args += "--deterministic-mode "
