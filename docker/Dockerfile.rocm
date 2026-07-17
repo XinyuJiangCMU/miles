@@ -28,7 +28,6 @@ ARG MILES_COMMIT=main
 ARG GPU_ARCH=gfx950
 # 1 on ROCm 7.2 to bake the ROCr VMM-pause fix; ROCm 7.0 has no such regression, leave 0.
 ARG APPLY_ROCR_VMMFIX=0
-# 1 only on the ROCm 7.0 sglang base (dp_attention 700A workaround); 0 on 7.2.
 ARG SGLANG_USE_ROCM700A=0
 ARG WHEELS_REPO=XinyuJiangCMU/miles-wheels-rocm
 ARG WHEELS_TAG_ROCM=rocm720-gfx950-v0.5.14
