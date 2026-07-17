@@ -56,6 +56,19 @@ _MEGATRON_MODEL_TYPE = {
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
+_DSV4_TE_PRECISION_CONFIG = """
+configs:
+  bf16:
+    transformer_engine_config_type: "TEQuantizationParams"
+    training_recipe: {}
+matchers:
+  dsa_indexer_weights_proj_bf16:
+    type: "glob"
+    enabled: true
+    pattern: "*.self_attention.indexer.linear_weights_proj"
+    config: "bf16"
+""".strip()
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):

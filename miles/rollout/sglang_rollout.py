@@ -13,7 +13,6 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.compatibility import load_generate_function
@@ -22,7 +21,8 @@ from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
-from miles.utils.misc import SingletonMeta, load_function
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
 from miles.utils.processing_utils import (
     call_processor,
     encode_image_for_rollout_engine,
@@ -360,6 +360,10 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     for url, result in zip(urls, abort_results, strict=False):
         if isinstance(result, Exception):
             logger.warning(f"Failed to abort worker at {url}: {result}")
+
+    # Let the agent integration tear down its in-flight trials so they stop hitting
+    # SGLang, instead of running on until their own max_seq_len / timeout.
+    await call_agent_abort_hook(args)
 
     # make sure all the pending tasks are finished
     count = 0

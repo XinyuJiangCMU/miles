@@ -1,12 +1,14 @@
 # doc-dev: docs/ci/02-docker-build.md
 # Multi-arch ROCm image for Miles (built on a prebuilt sglang base):
 #
-# 1. rocm/sgl-dev:MI350-355-latest  (gfx950, ROCm 7.2 / MI350 / MI355X)
-#    use default settings
+# 1. rocm700-mi35x  (gfx950, ROCm 7.0 / MI350 / MI355X)
+#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.14-rocm700-mi35x-20260627
 #
-# 2. rocm/sgl-dev:MI300-latest  (gfx942, ROCm 7.0 / MI300 / MI325)
-#    build-arg:GPU_ARCH=gfx942
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
+# 2. rocm700-mi30x  (gfx942, ROCm 7.0 / MI300 / MI325)
+#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
+#
+# 3. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
+#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
 
 ARG SGLANG_IMAGE_TAG=v0.5.14-rocm700-mi35x-20260627
 FROM rocm/sgl-dev:${SGLANG_IMAGE_TAG} AS sglang
@@ -27,6 +29,10 @@ ARG MEGATRON_BRANCH=miles-main
 ARG MILES_COMMIT=main
 
 ARG GPU_ARCH=gfx950
+# 1 on ROCm 7.2 to bake the ROCr VMM-pause fix; ROCm 7.0 has no such regression, leave 0.
+ARG APPLY_ROCR_VMMFIX=0
+ARG WHEELS_REPO=XinyuJiangCMU/miles-wheels-rocm
+ARG WHEELS_TAG_ROCM=rocm720-gfx950-v0.5.14
 ARG MAX_JOBS=128
 
 
@@ -62,12 +68,14 @@ ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 COPY docker/amd_patch/latest/megatron.patch /tmp/amd_patch/megatron.patch
 COPY docker/amd_patch/latest/miles.patch /tmp/amd_patch/miles.patch
 COPY docker/amd_patch/latest/sglang_attn_bridge /tmp/amd_patch/sglang_attn_bridge
+COPY docker/amd_patch/latest/tile_kernels.patch /tmp/amd_patch/tile_kernels.patch
+COPY docker/amd_patch/latest/tilelang_hip_fp8.patch /tmp/amd_patch/tilelang_hip_fp8.patch
 COPY requirements.txt /tmp/requirements.txt
 
 # ======================================== Apt dependencies =====================================
 RUN apt update
 # Install build tools and diagnostics utilities.
-RUN apt install -y build-essential cmake dnsutils ethtool git nvtop rsync
+RUN apt install -y build-essential cmake dnsutils ethtool git nvtop patch rsync
 
 # Build rccl-tests diagnostics binaries (shallow fetch-by-sha of the pinned commit).
 RUN mkdir -p /tmp/rocm-systems && cd /tmp/rocm-systems && git init -q && \
@@ -89,8 +97,12 @@ RUN rm -rf /root/TransformerEngine && \
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm MAX_JOBS=${MAX_JOBS} \
-    pip -v install flash-attn==2.8.3 --no-build-isolation
+# Prebuilt wheels from the miles-wheels-rocm release; flash-attn installs here, gateway below.
+RUN mkdir -p /tmp/wheels && \
+    curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
+    | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; [subprocess.run(['curl','-fsSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) for a in json.load(sys.stdin).get('assets',[]) if a['name'].endswith(('.whl','.tar.gz'))]" && \
+    ls -lh /tmp/wheels/
+RUN pip install /tmp/wheels/flash_attn-*.whl
 
 RUN pip install flash-linear-attention==0.4.2
 
@@ -129,6 +141,22 @@ RUN cd /sgl-workspace/sglang && \
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
+
+# Fix the ROCm 7.2 ROCr VMM-pause leak.
+RUN if [ "$APPLY_ROCR_VMMFIX" = "1" ]; then \
+      asset="libhsa-runtime64.so.1.18.70200.vmmfix"; \
+      curl -fsSL -o "/tmp/$asset" "https://github.com/${WHEELS_REPO}/releases/download/${WHEELS_TAG_ROCM}/$asset"; \
+      dst="$(readlink -f /opt/rocm/lib/libhsa-runtime64.so.1)"; \
+      case "$dst" in \
+        *.1.18.70200) ;; \
+        *) echo "[vmmfix] ROCr soname mismatch: $dst (expected .1.18.70200 = ROCm 7.2.0); rebuild the .so" >&2; exit 1 ;; \
+      esac; \
+      cp -a "$dst" /opt/libhsa-runtime64.so.stock-prevmmfix.bak && \
+      install -m0644 "/tmp/$asset" "$dst" && rm -f "/tmp/$asset" && \
+      echo "[vmmfix] installed patched ROCr at $dst"; \
+    else \
+      echo "[vmmfix] skipped (APPLY_ROCR_VMMFIX=$APPLY_ROCR_VMMFIX; ROCm 7.0 has no VMM-pause regression)"; \
+    fi
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
@@ -163,6 +191,9 @@ RUN set -eux; \
 
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
     pip install -r /tmp/requirements.txt
+
+# Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
+RUN pip install "typer==0.25.1" "click==8.2.1"
 
 # Pin numpy 1.x for Megatron compatibility.
 RUN pip install "numpy<2"
