@@ -97,6 +97,17 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self.rollout_engines = rollout_engines
         self._connection_stale = False
         self._group_name = "miles-disk-delta"
+        self._connection_stale = False
+
+    # Parity with broadcast/p2p backends (used by the async/staleness path). disk-delta has no
+    # NCCL connection to go stale — the transport is the shared FS — so freshness == engines exist.
+    def is_rollout_engines_fresh(self) -> bool:
+        return getattr(self, "rollout_engines", None) is not None and not getattr(
+            self, "_connection_stale", False
+        )
+
+    def mark_engine_connection_stale(self) -> None:
+        self._connection_stale = True
 
     @property
     def _is_source(self):

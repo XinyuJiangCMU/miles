@@ -196,6 +196,10 @@ def connect_rollout_engines_from_distributed(
         world_size=world_size,
         rank=0,
         group_name=group_name,
+        # Bind this rank's CUDA device so RCCL eager-inits the communicator (torch>=2.9 needs an
+        # explicit device_id for cross-domain groups; without it the 1-actor+16-engine group's device
+        # inference is inconsistent and ncclCommInitRank bootstrap hangs). Mirrors the P2P send path.
+        device_id=torch.device("cuda", torch.cuda.current_device()),
     )
     ray.get(refs)
     return model_update_groups
