@@ -289,6 +289,22 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
+        if total_gpus == 16:  # 2 nodes x 8 (2+2 disagg async): TP2/PP4/EP4, DP = 16/(TP2*PP4) = 2.
+            # DP=2 is the point: it shards the fp32 Adam 2-way (vs TP8/DP1 which keeps FULL Adam/GPU and
+            # needs 0.75 host-offload) -> 291B FP8 fits 16 GPU with host RAM to spare (~862G free/node).
+            # TP: TP1 (blog) needs the sparse-MLA fwd kernel at 202KB smem > gfx950's 160KB; TP2 drops it to
+            # ~172KB (still 8KB over) -> ALSO cap the kernel's pipeline to num_stages=1 on HIP
+            # (tilelang_sparse_mla_fwd.py) to fit. TP2 also enables --sequence-parallel (TP>1).
+            # 43 layers = 11+11+11+10 (same pipeline depth as the 32-GPU config).
+            return (
+                "--tensor-model-parallel-size 2 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 4 "
+                "--decoder-last-pipeline-num-layers 10 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 4 "
+                "--expert-tensor-parallel-size 1 "
+            )
 
     raise NotImplementedError(
         f"No pre-set parallel config for {total_gpus} GPUs. "

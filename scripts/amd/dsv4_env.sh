@@ -64,4 +64,12 @@ export GLOO_SOCKET_IFNAME=enp81s0f1np1
 export NCCL_NET_GDR_LEVEL=SYS               # GPUDirect RDMA
 export NCCL_MIN_NCHANNELS=16                # playbook: 16稳/32max/64hang（原112太高有hang风险）
 export NCCL_MAX_NCHANNELS=16
-export no_proxy="127.0.0.1,localhost,${MASTER_ADDR}"
+# BRING-UP (2+2 disagg): the FIRST cross-domain (actor<->rollout) weight-transfer NCCL group
+# hangs establishing RoCE transport (py-spy: all 17 ranks spin 99%CPU/0%GPU in broadcast, ~30min timeout).
+# Force TCP over the mgmt net for now (weight-sync is ~5% of step, not hot path). TODO: targeted RoCE fix
+# (device_id + explicit timeout in broadcast.py:193-199) so training collectives keep 378GB/s GDR.
+export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-0}   # colocate default 0 (RoCE on for train-collective speed; colocate has NO cross-domain weight-transfer group so no hang). 2+2 disagg bring-up overrides to 1 via -e (disk-delta cross-domain NCCL hang workaround).
+# no_proxy must cover ALL node mgmt IPs (pp_2/pp_3 group masters resolve to actor node-8=.126), else a
+# container proxy can block the Ray control path to non-head masters. 4=.111 6=.201 8=.126 9=.127.
+export no_proxy="127.0.0.1,localhost,172.30.160.111,172.30.160.201,172.30.160.126,172.30.160.127,${MASTER_ADDR}"
+
