@@ -10,15 +10,14 @@
 # 3. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
 #    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.14-rocm720-mi35x-20260627
 
-ARG SGLANG_IMAGE_REPO=rocm/sgl-dev
-ARG SGLANG_IMAGE_TAG=v0.5.14-rocm720-mi35x-20260627
+ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
+ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
 FROM ${SGLANG_IMAGE_REPO}:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
 
 # ======================================== Arguments ============================================
-ARG SGLANG_REPO=https://github.com/XinyuJiangCMU/sglang.git
-ARG SGLANG_BRANCH=wip/dsv4-flash-rollout-speedup-20260711-sglang-miles
+ARG SGLANG_BRANCH=sglang-miles
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
@@ -27,14 +26,19 @@ ARG MEGATRON_BRANCH=miles-main
 ARG MILES_COMMIT=main
 
 ARG GPU_ARCH=gfx950
+# 1 on ROCm 7.2 to bake the ROCr VMM-pause fix; ROCm 7.0 has no such regression, leave 0.
+ARG APPLY_ROCR_VMMFIX=0
+ARG SGLANG_USE_ROCM700A=0
+ARG WHEELS_REPO=XinyuJiangCMU/miles-wheels-rocm
+ARG WHEELS_TAG_ROCM=rocm720-gfx950-v0.5.14
 ARG MAX_JOBS=128
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
-ARG RCCL_TESTS_BRANCH=develop
+ARG RCCL_TESTS_COMMIT=746c7b3c9e78b094389e19499919fdd43a0b6a90
 ARG RCCL_TESTS_PATH=projects/rccl-tests
 
-ARG TRANSFORMER_ENGINE_REPO=https://github.com/XinyuJiangCMU/TransformerEngine.git
-ARG TRANSFORMER_ENGINE_BRANCH=miles-te-pow2-20260711
+ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
+ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
 
 # ======================================== Setup ================================================
 WORKDIR /root/
@@ -68,7 +72,6 @@ RUN apt update
 # Install build tools and diagnostics utilities.
 RUN apt install -y build-essential cmake dnsutils ethtool git nvtop patch rsync
 
-ARG RCCL_TESTS_COMMIT=746c7b3c9e78b094389e19499919fdd43a0b6a90
 # Build rccl-tests diagnostics binaries.
 RUN mkdir -p /tmp/rocm-systems && cd /tmp/rocm-systems && git init -q && \
     git remote add origin ${RCCL_TESTS_REPO} && \
@@ -82,15 +85,12 @@ RUN mkdir -p /tmp/rocm-systems && cd /tmp/rocm-systems && git init -q && \
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
 # Prebuilt wheels from the miles-wheels-rocm release (Transformer Engine, flash-attn; gateway below).
-ARG WHEELS_REPO=XinyuJiangCMU/miles-wheels-rocm
-ARG WHEELS_TAG_ROCM=rocm720-gfx950-v0.5.14
-ARG APPLY_ROCR_VMMFIX=1
 RUN mkdir -p /tmp/wheels && \
     curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; [subprocess.run(['curl','-fsSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) for a in json.load(sys.stdin).get('assets',[]) if a['name'].endswith(('.whl','.tar.gz'))]" && \
     ls -lh /tmp/wheels/
-# Transformer Engine: prebuilt fp8 wheel (TE_USE_WHEEL=1) or source build.
-ARG TE_USE_WHEEL=1
+# Transformer Engine: prebuilt fp8 wheel
+ARG TE_USE_WHEEL=0
 RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true; \
     if [ "${TE_USE_WHEEL}" = "1" ]; then \
       pip install /tmp/wheels/transformer_engine-*.whl; \
@@ -119,7 +119,7 @@ RUN rm -rf /root/Megatron-LM && \
 
 RUN cd /sgl-workspace/sglang && \
     git reset --hard && \
-    git fetch ${SGLANG_REPO} ${SGLANG_BRANCH} && \
+    git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
       git checkout ${SGLANG_COMMIT}; \
     else \
@@ -130,7 +130,8 @@ RUN cd /sgl-workspace/sglang && \
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
-# Fix the ROCm 7.2 ROCr VMM-pause leak so tms pause() actually frees VRAM (ROCm/ROCm#6021; drop once a release ships the fix).
+
+# Fix the ROCm 7.2 ROCr VMM-pause leak.
 RUN if [ "$APPLY_ROCR_VMMFIX" = "1" ]; then \
       asset="libhsa-runtime64.so.1.18.70200.vmmfix"; \
       curl -fsSL -o "/tmp/$asset" "https://github.com/${WHEELS_REPO}/releases/download/${WHEELS_TAG_ROCM}/$asset"; \
@@ -143,7 +144,7 @@ RUN if [ "$APPLY_ROCR_VMMFIX" = "1" ]; then \
       install -m0644 "/tmp/$asset" "$dst" && rm -f "/tmp/$asset" && \
       echo "[vmmfix] installed patched ROCr at $dst"; \
     else \
-      echo "[vmmfix] skipped (APPLY_ROCR_VMMFIX=$APPLY_ROCR_VMMFIX)"; \
+      echo "[vmmfix] skipped (APPLY_ROCR_VMMFIX=$APPLY_ROCR_VMMFIX; ROCm 7.0 has no VMM-pause regression)"; \
     fi
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
@@ -156,6 +157,7 @@ RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install "setuptools==79.0.1"
 
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
+    sed -i '/nvidia-resiliency-ext/d' /tmp/requirements.txt && \
     pip install -r /tmp/requirements.txt
 
 # Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
@@ -174,43 +176,46 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
 
-
 # ====================================== Install sgl-model-gateway ============================================
 # SGL_ROUTER_USE_WHEELS=1 (default): prebuilt sgl-router wheel + gateway binary; 0: build from source.
 ARG SGL_ROUTER_USE_WHEELS=1
 ARG SGL_ROUTER_REPO=https://github.com/radixark/sgl-router-for-miles.git
 ARG SGL_ROUTER_BRANCH=main
-RUN set -eux; \
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
     if [ "${SGL_ROUTER_USE_WHEELS}" = "1" ]; then \
-      pip install --force-reinstall --no-deps /tmp/wheels/sglang_router-*.whl; \
-      tar xzf /tmp/wheels/sgl-model-gateway-linux-*.tar.gz -C /usr/local/bin/; \
+      pip install --force-reinstall --no-deps /tmp/wheels/sglang_router-*.whl && \
+      tar xzf /tmp/wheels/sgl-model-gateway-linux-*.tar.gz -C /usr/local/bin/ && \
       chmod +x /usr/local/bin/sgl-model-gateway; \
     else \
-      command -v cargo >/dev/null 2>&1 || { curl --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y; }; \
-      export PATH="/root/.cargo/bin:${PATH}"; \
-      python3 -m pip install maturin; \
-      git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway; \
-      ( cd /build/sgl-model-gateway/bindings/python && ulimit -n 65536 && maturin build --release --features vendored-openssl --out /build/gateway_wheels ); \
-      ( cd /build/sgl-model-gateway && cargo build --release --bin sgl-model-gateway --features vendored-openssl ); \
-      cp /build/sgl-model-gateway/target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway; \
-      chmod +x /usr/local/bin/sgl-model-gateway; \
-      pip install --force-reinstall --no-deps /build/gateway_wheels/sglang_router-*.whl; \
-      rm -rf /build/sgl-model-gateway /build/gateway_wheels /root/.cargo /root/.rustup; \
-    fi; \
-    rm -rf /tmp/wheels
+      export PATH="/root/.cargo/bin:${PATH}" && \
+      { command -v cargo >/dev/null 2>&1 || curl --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 -sSf https://sh.rustup.rs | sh -s -- -y; } && \
+      python3 -m pip install maturin && \
+      git clone --branch "${SGL_ROUTER_BRANCH}" --depth 1 "${SGL_ROUTER_REPO}" /build/sgl-model-gateway && \
+      ( cd /build/sgl-model-gateway/bindings/python && ulimit -n 65536 && maturin build --release --features vendored-openssl --out /build/gateway_wheels ) && \
+      ( cd /build/sgl-model-gateway && cargo build --release --bin sgl-model-gateway --features vendored-openssl ) && \
+      cp /build/sgl-model-gateway/target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
+      chmod +x /usr/local/bin/sgl-model-gateway && \
+      pip install --force-reinstall --no-deps /build/gateway_wheels/sglang_router-*.whl && \
+      rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
+    fi
+
+RUN rm -rf /tmp/wheels
 
 # ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
 ENV HIP_FORCE_DEV_KERNARG=1
-ENV HSA_NO_SCRATCH_RECLAIM=1
-# Force the legacy (non-dmabuf) GPU IPC export path.
+# ROCm 7.2 switched IPC to dma-buf, which leaks exported VRAM in colocate; force legacy IPC to avoid it.
 ENV HSA_ENABLE_IPC_MODE_LEGACY=1
+ENV HSA_NO_SCRATCH_RECLAIM=1
 ENV SGLANG_USE_AITER=1
 ENV SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
 ENV SGLANG_MOE_PADDING=1
 ENV SGLANG_SET_CPU_AFFINITY=1
 ENV SGLANG_ROCM_FUSED_DECODE_MLA=1
+ENV SGLANG_USE_ROCM700A=${SGLANG_USE_ROCM700A}
 ENV NCCL_MIN_NCHANNELS=112
 ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
 ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
