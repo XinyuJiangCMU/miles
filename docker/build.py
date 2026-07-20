@@ -96,7 +96,13 @@ def run(cmd: list[str], dry_run: bool) -> None:
 
 
 def build_and_push(
-    variant: str, image_tag: str, dry_run: bool, dockerfile: str, push: bool = False, custom_tag: str = ""
+    variant: str,
+    image_tag: str,
+    dry_run: bool,
+    dockerfile: str,
+    push: bool = False,
+    custom_tag: str = "",
+    no_cache: bool = False,
 ) -> None:
     config = VARIANTS[variant]
     # A variant may pin its own Dockerfile (e.g. ROCm); otherwise use the CLI default.
@@ -128,6 +134,9 @@ def build_and_push(
 
     if platforms:
         cmd += ["--platform", ",".join(platforms)]
+
+    if no_cache:
+        cmd += ["--no-cache"]
 
     if push:
         cmd += ["--push"]
@@ -177,8 +186,11 @@ def main(
     dry_run: bool = typer.Option(False, help="Print commands without executing them."),  # noqa: B008
     push: bool = typer.Option(False, help="Push images to registry after building."),  # noqa: B008
     custom_tag: str = typer.Option("", help="Custom tag name (required when --image-tag is custom)."),  # noqa: B008
+    no_cache: bool = typer.Option(False, help="Build without the Docker layer cache (nightly builds)."),  # noqa: B008
 ) -> None:
-    build_and_push(variant.value, image_tag.value, dry_run, dockerfile, push=push, custom_tag=custom_tag)
+    build_and_push(
+        variant.value, image_tag.value, dry_run, dockerfile, push=push, custom_tag=custom_tag, no_cache=no_cache
+    )
 
 
 if __name__ == "__main__":
