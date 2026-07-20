@@ -61,7 +61,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ] = "DeepSeek-V4-Flash-FP8"
 
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
-    enable_eval: bool = False
+    enable_eval: bool = True
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -338,13 +338,13 @@ def _train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 8192 "
+                f"--rollout-max-response-len 4096 "
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 16384 "
+                "--eval-max-response-len 4096 "
             )
         case "gsm8k":
             rollout_args += (
@@ -428,7 +428,7 @@ def _train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
-        "--sglang-mem-fraction-static 0.6 "
+        "--sglang-mem-fraction-static 0.7 "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
