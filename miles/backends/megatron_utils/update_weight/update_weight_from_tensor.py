@@ -195,6 +195,7 @@ class UpdateWeightFromTensor:
         version++, flush caches, process buckets. Progress on rank 0.
         """
         self.weight_version += 1
+        _REUSE_CALL_SEQ[0] = 0
 
         rank = dist.get_rank()
 
@@ -306,6 +307,19 @@ class UpdateWeightFromTensor:
             return refs or [], long_lived_tensors
 
 
+# [leakhunt] ROCm-only persistent IPC-export buffers. On ROCm the HIP-IPC caching
+# allocator does not reclaim or reuse a block once it has been IPC-exported, so a fresh
+# flatten per weight push leaks roughly one weight set per step (NV reuses same-size
+# exported blocks and does not leak, measured flat over 250 iters on B200, so the CUDA
+# path is left untouched). Reuse one physical buffer per (call-seq, group, shape): the
+# per-push call sequence (reset at the start of update_weights) gives every chunk within
+# a single push its OWN buffer, so the producer never overwrites a buffer the rollout
+# engine may still be asynchronously copying out; across pushes the same seq is reused,
+# separated by the entire rollout phase, so the footprint stays bounded.
+_REUSE_EXPORT_BUFS: dict = {}
+_REUSE_CALL_SEQ: list = [0]
+
+
 def _send_to_colocated_engine(
     hf_named_tensors: list[tuple[str, torch.Tensor]],
     *,
@@ -338,10 +352,22 @@ def _send_to_colocated_engine(
             converted_named_tensors_by_dtypes[dtype].append((name, tensor))
 
     serialized_tensors: list = []
-    for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
+    _reuse_export = torch.version.hip is not None
+    _seq = _REUSE_CALL_SEQ[0]
+    _REUSE_CALL_SEQ[0] += 1
+    for _grp_idx, (_dtype, named_tensors) in enumerate(converted_named_tensors_by_dtypes.items()):
         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
+        _flattened = flattened_tensor_bucket.get_flattened_tensor()
+        if _reuse_export:
+            _key = (_seq, _grp_idx, _flattened.numel(), _flattened.dtype, _flattened.device)
+            _buf = _REUSE_EXPORT_BUFS.get(_key)
+            if _buf is None:
+                _buf = torch.empty_like(_flattened)
+                _REUSE_EXPORT_BUFS[_key] = _buf
+            _buf.copy_(_flattened)
+            _flattened = _buf
         flattened_tensor_data = {
-            "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
+            "flattened_tensor": _flattened,
             "metadata": flattened_tensor_bucket.get_metadata(),
         }
         long_live_tensors.append(flattened_tensor_data)
