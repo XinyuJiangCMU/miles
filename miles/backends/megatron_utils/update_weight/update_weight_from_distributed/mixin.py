@@ -21,6 +21,7 @@ from ..common import (
     end_weight_update,
     get_atomic_update_groups,
     get_named_value_update_units,
+    weight_update_selector,
 )
 from ..hf_weight_iterator_base import HfWeightIteratorBase
 
@@ -312,7 +313,7 @@ class DistBucketedWeightUpdateMixin:
             if mode != "in_place":
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
-            begin_weight_update(self.rollout_engines)
+            begin_weight_update(self.rollout_engines, weight_update_selector(self.args))
 
     def _finalize_and_resume_engines(self) -> None:
         """Close the weight-update session and resume rollout engines."""

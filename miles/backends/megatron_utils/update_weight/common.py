@@ -387,9 +387,15 @@ def collect_named_tensors_for_weight_transfer(
             yield name, tensor
 
 
-def begin_weight_update(rollout_engines: Sequence[ActorHandle]):
-    """Open a weight-update session on all rollout engines (restore packed weights)."""
-    ray.get([engine.begin_weight_update.remote() for engine in rollout_engines])
+def begin_weight_update(rollout_engines: Sequence[ActorHandle], selector: str = "all"):
+    """Open a weight-update session on the selected rollout engines (restore packed weights)."""
+    ray.get([engine.begin_weight_update.remote(selector=selector) for engine in rollout_engines])
+
+
+def weight_update_selector(args) -> str:
+    if getattr(args, "sglang_speculative_algorithm", None) and not getattr(args, "enable_mtp_training", False):
+        return "target"
+    return "all"
 
 
 def end_weight_update(rollout_engines: Sequence[ActorHandle]):
