@@ -624,10 +624,7 @@ class SGLangEngine(RayActor):
         return response
 
     def begin_weight_update(self, selector: str = "all"):
-        """Open a weight-update session on the engine (restores packed weights for loading).
-
-        selector picks which runners the session covers ("target" excludes a frozen
-        speculative draft that never receives our weights)."""
+        """Open a weight-update session on the engine (restores packed weights for loading)."""
         return self._make_request("begin_weight_update", {"selector": selector})
 
     def end_weight_update(self):
