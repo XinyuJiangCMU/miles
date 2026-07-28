@@ -307,7 +307,6 @@ class DistBucketedWeightUpdateMixin:
 
     def _pause_and_prepare_engines(self) -> None:
         """Pause rollout engines, flush cache, and open the weight-update session."""
-        # Resolved once here so the session and every payload below use the same value.
         self._weight_update_selector = weight_update_selector(self.args)
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
