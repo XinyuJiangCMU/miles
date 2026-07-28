@@ -115,6 +115,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             self.weight_version,
             self.rollout_engines,
             converted_named_tensors,
+            selector=self._weight_update_selector,
         )
         ray.get(refs)
         converted_named_tensors.clear()

@@ -393,7 +393,21 @@ def begin_weight_update(rollout_engines: Sequence[ActorHandle], selector: str = 
 
 
 def weight_update_selector(args) -> str:
-    if getattr(args, "sglang_speculative_algorithm", None) and not getattr(args, "enable_mtp_training", False):
+    """Which sglang model runners this job's weight sync covers.
+
+    The draft is excluded only when the training model provably has no MTP block, so it
+    receives nothing and a session over it would restore and re-finalize weights that
+    never changed. `mtp_num_layers` is the gate because it alone decides whether the
+    block is built (see model_provider); `enable_mtp_training` only adds the loss, and
+    several shipped recipes set the layer count without it. Bridge models derive the
+    block from the HF config and leave `mtp_num_layers` unset, so absence proves nothing
+    there and the draft stays in.
+    """
+    if (
+        getattr(args, "sglang_speculative_algorithm", None)
+        and not getattr(args, "mtp_num_layers", None)
+        and getattr(args, "megatron_to_hf_mode", "raw") != "bridge"
+    ):
         return "target"
     return "all"
 
