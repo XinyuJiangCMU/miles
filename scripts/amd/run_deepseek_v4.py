@@ -64,6 +64,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # Default OFF: 16k eval (--eval-interval 20, AIME 240 gens) takes ~14min and blocks step-0/step-20,
     # slowing the training-flow watch. Re-enable with --enable-eval for a dedicated AIME-score run (task #15).
     enable_eval: bool = False
+    enable_mtp: bool = False
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -514,6 +515,16 @@ def _train(args: ScriptArgs):
         misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"1"}' """
         # ROCm TE MoE FP8 lacks fused wgrad accumulation; disable the fusion.
         misc_args += "--no-gradient-accumulation-fusion "
+
+    if args.enable_mtp:
+        sglang_args += (
+            "--sglang-speculative-algorithm EAGLE "
+            "--sglang-speculative-num-steps 3 "
+            "--sglang-speculative-eagle-topk 1 "
+            "--sglang-speculative-num-draft-tokens 4 "
+        )
+        # gfx950: use RCCL all-gather for speculative decoding; aiter can deadlock.
+        extra_env_vars |= {"SGLANG_USE_AITER_AG": "false"}
 
     train_args = (
         f"{ckpt_args} "
