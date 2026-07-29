@@ -228,12 +228,6 @@ class UpdateWeightFromTensor:
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
             ):
-                if not hf_named_tensors:
-                    # A chunk can be empty when all its params were skipped in the
-                    # megatron->hf converter (e.g. MTP head params with no sglang draft
-                    # target). Skip it so _send_to_colocated_engine does not raise
-                    # "Cannot create empty tensor bucket".
-                    continue
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
