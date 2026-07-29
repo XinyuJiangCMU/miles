@@ -208,6 +208,13 @@ def _prepare_spmd(args: ScriptArgs):
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 8 "
         )
+    elif actor_num_nodes > 1 and not is_4layer:
+        # Same-topology conversion: build torch_dist in the TRAINING parallel layout
+        # (TP8/PP4/EP8, decoder 11/../10) so training load needs NO reshard -> each rank
+        # reads only its own shard -> small DCP LoadPlan -> avoids the central
+        # determine_global_metadata all_gather/pickle hang. Reuse the exact train
+        # topology so convert and train can never diverge.
+        extra_args = _get_parallel_config(args)
     else:
         raise NotImplementedError(
             f"No verified SPMD conversion config for {args.model_name} "
@@ -357,7 +364,7 @@ def _train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 8192 "  # 8k = practical middle: 16k host-OOM'd on 4 nodes (ray killed worker, node-4 host RAM exhausted, ~1 step); 4k truncated 57%. 8k halves the host-RAM pressure of 16k while cutting truncation vs 4k. (real AIME 0.833 already measured via 16k eval; eval stays 16k below for that.)
+                f"--rollout-max-response-len 16384 "  # 16k default (2026-07-21, experiments default 16k). AIME needs full CoT; 8k truncated ~35%. 16k runs on 4 nodes ONLY with --sglang-mem-fraction-static 0.5 + --optimizer-offload-fraction 0.6 (else step-2 resume host-OOMs, see JOURNEY P1) -- submit must pass those.
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
             eval_args += (
@@ -409,9 +416,15 @@ def _train(args: ScriptArgs):
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
         if args.actor_num_nodes == 4:
-            # 4-node PP4 memory balance: partial optimizer offload (keep ~25% on GPU) + keep train
-            # weights on GPU; pair with --sglang-mem-fraction-static 0.6.
-            optimizer_args += "--optimizer-offload-fraction 0.75 " "--no-offload-train "
+            # 4-node PP4 memory balance. The three memory knobs below are a set: 0.75 offload put
+            # ~1TB/node of optimizer state on the host and the box died at 98.7% of 1.5TB, while
+            # mem-fraction 0.6 left a 95.4GB KV pool that no longer fit the 80.6GB free at the
+            # step-1 resume. Both walls were hit on 2026-07-27. This is the combination JOURNEY P1
+            # verified for 30 steps at 16k response length; do not move one knob on its own.
+            optimizer_args += "--optimizer-offload-fraction 0.6 " "--no-offload-train "
+            # Pause only the KV cache during rollout, so the rollout weights are not copied to the
+            # host. Miles defaults to ["kv_cache", "weight"].
+            optimizer_args += "--offload-rollout-level kv_cache "
 
     sglang_world_size = 4
     sglang_tp_size = 4
@@ -427,7 +440,8 @@ def _train(args: ScriptArgs):
         "--router-health-failure-threshold 40 "  # TODO improve
         # gfx950: cuda-graph ENABLED (2026-07-14). Graph-safety validated on rocm720 (node-7 standalone: GSM8K 0.950,
         # +2.5x = 1081 tok/gpu/s; the old topk_transform_512 concern is moot on 720). Colocate wedge risk (aiter custom-AR
-        # IPC buffer vs torch_memory_saver pause/resume, aiter #2061) is handled by SGLANG_MEMORY_SAVER_CUDA_GRAPH=1 below
+        # IPC buffer vs torch_memory_saver pause/resume, aiter #2061) is handled by SGLANG_MEMORY_SAVER_CUDA_GRAPH, which
+        # miles already turns on for every rollout engine in miles/ray/rollout/server_group.py
         # (routes AR through the unreg capture path). NOTE: DSv4-Flash top-k runs the ROCm-registered
         # deepseek_v4_topk_transform_512 op, NOT torch; --dsa-topk-backend only affects DSv3.2-DSA, inert here.
     )
@@ -443,8 +457,6 @@ def _train(args: ScriptArgs):
         # -- infra --
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",       # 20->120s: tolerate slow ROCm warmup / aiter GEMM tune under colocate
         "AITER_BF16_FP8_MOE_BOUND": "0",            # aiter-internal MoE bf16<->fp8 bound; kept for DSv4-Flash-FP8 test parity
-        # -- colocate cuda-graph (2026-07-14): deploy the standalone-verified 2.5x into training --
-        "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "1",      # route aiter custom-AR through the unreg capture path (custom_all_reduce.py:399-402) so cuda-graph capture doesn't bake a stale IPC ptr under torch_memory_saver pause/resume -> avoids the aiter #2061 GPU wedge (which would need a node reboot). REQUIRED when cuda-graph is on in colocate.
         # NOTE: 13 other SGLANG_OPT_* knobs dropped as inert on DSv4-Flash/gfx950 -- either force-set to the same
         # value by the server_args DeepseekV4+is_hip block (~3821-3832), equal to the platform default, on a CUDA-only
         # path, or unread (FUSED_COMPRESS_TRITON hardcodes False; DSA_TOPK_BROADCAST is DSv3.2-only). See JOURNEY.
@@ -459,7 +471,7 @@ def _train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
-        "--sglang-mem-fraction-static 0.6 "  # 4-node colocate: leave VRAM for train weights (was overridden to 0.6 via launcher)
+        "--sglang-mem-fraction-static 0.5 "  # 4-node colocate: sizes the KV pool that resume has to remap in one block. 0.6 left a 95.4GB pool against 80.6GB free after the first optimizer step and hipMemCreate failed; 0.5 brings it to ~69GB. Pairs with --optimizer-offload-fraction 0.6.
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
@@ -508,6 +520,15 @@ def _train(args: ScriptArgs):
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
+
+    # ROCm/gfx950: force Simple proto + disable MSCCL to avoid batch_isend_irecv PP
+    # p2p deadlock on RoCE. AMD multinode near-mandatory.
+    # Commented out 2026-07-27 alongside the Megatron gloo workarounds, to see which of
+    # these the run actually still needs. Put back if PP p2p hangs.
+    # extra_env_vars |= {
+    #     "NCCL_PROTO": "Simple",
+    #     "RCCL_MSCCL_ENABLE": "0",
+    # }
 
     if args.fp8_training:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
