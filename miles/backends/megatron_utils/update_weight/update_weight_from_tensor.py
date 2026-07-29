@@ -19,7 +19,12 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import _check_weight_sync_results, begin_weight_update, end_weight_update
+from .common import (
+    _check_weight_sync_results,
+    begin_weight_update,
+    end_weight_update,
+    weight_update_selector,
+)
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -214,7 +219,7 @@ class UpdateWeightFromTensor:
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
             if not skip_base_sync:
-                begin_weight_update(self.rollout_engines)
+                begin_weight_update(self.rollout_engines, weight_update_selector(self.args))
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
@@ -223,6 +228,12 @@ class UpdateWeightFromTensor:
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
             ):
+                if not hf_named_tensors:
+                    # A chunk can be empty when all its params were skipped in the
+                    # megatron->hf converter (e.g. MTP head params with no sglang draft
+                    # target). Skip it so _send_to_colocated_engine does not raise
+                    # "Cannot create empty tensor bucket".
+                    continue
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
@@ -268,6 +279,7 @@ class UpdateWeightFromTensor:
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
+            selector=weight_update_selector(self.args),
             weight_version=self.weight_version,
         )
         if self.use_distribute and self._is_distributed_src_rank:
@@ -277,6 +289,7 @@ class UpdateWeightFromTensor:
                 self.weight_version,
                 self.distributed_rollout_engines,
                 hf_named_tensors,
+                selector=weight_update_selector(self.args),
             )
             if refs_distributed:
                 refs = (refs or []) + refs_distributed
@@ -296,6 +309,7 @@ class UpdateWeightFromTensor:
                 ipc_engine=self._ipc_engine,
                 ipc_gather_src=self._ipc_gather_src,
                 ipc_gather_group=self._ipc_gather_group,
+                selector=weight_update_selector(self.args),
                 lora_config=self._lora_config,
                 lora_name=LORA_ADAPTER_NAME,
                 lora_loaded=self._lora_loaded,
@@ -314,6 +328,7 @@ def _send_to_colocated_engine(
     lora_config: dict | None = None,
     lora_name: str | None = None,
     lora_loaded: bool = False,
+    selector: str = "all",
 ) -> tuple[list[ObjectRef], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -381,6 +396,7 @@ def _send_to_colocated_engine(
                     "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
                     "load_format": "flattened_bucket",
                     "weight_version": str(weight_version),
+                    "selector": selector,
                 }
                 refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
 
