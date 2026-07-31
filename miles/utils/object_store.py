@@ -141,20 +141,7 @@ class MooncakeObjectStore(BaseObjectStore):
             raise ValueError("--mooncake-replica-num must be >= 1")
 
         store = MooncakeDistributedStore()
-        config = _mooncake_store_config(self._init_kwargs, contribute_segment=contribute_segment)
-        try:
-            setup_error = store.setup(config)
-        except TypeError:
-            # Older mooncake builds only take the settings positionally.
-            setup_error = store.setup(
-                config["local_hostname"],
-                config["metadata_server"],
-                config["global_segment_size"],
-                config["local_buffer_size"],
-                config["protocol"],
-                config["rdma_devices"],
-                config["master_server_addr"],
-            )
+        setup_error = store.setup(_mooncake_store_config(self._init_kwargs, contribute_segment=contribute_segment))
         if setup_error:
             raise RuntimeError(f"Mooncake store setup failed: {setup_error}")
         self._transfer = MooncakeBundleTransfer(store, key_prefix="miles-object-store")
