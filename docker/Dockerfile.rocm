@@ -102,15 +102,10 @@ RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_to
     fi
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
-# =========================== Mooncake structured object store ===========================
-
-# make install lays down mooncake's native modules but not its pure Python files, so take
-# those from the wheel and leave the HIP-linked native build the rest of the image uses.
-RUN set -eux; \
-    pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==${MOONCAKE_VERSION}"; \
-    cp -n /tmp/mc/mooncake/*.py "$(python3 -c 'import mooncake, os; print(os.path.dirname(mooncake.__file__))')"; \
-    rm -rf /tmp/mc; \
-    python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto; from mooncake.engine import TransferEngine"
+# make install lays down mooncake's native modules but not its pure Python files.
+RUN pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==${MOONCAKE_VERSION}" && \
+    cp -n /tmp/mc/mooncake/*.py "$(python3 -c 'import mooncake, os; print(os.path.dirname(mooncake.__file__))')" && \
+    rm -rf /tmp/mc
 
 RUN pip install flash-linear-attention==0.4.2
 
