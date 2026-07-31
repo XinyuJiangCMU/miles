@@ -40,7 +40,6 @@ ARG RCCL_TESTS_PATH=projects/rccl-tests
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
 ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
 ARG MOONCAKE_VERSION=0.3.12.post1
-ARG CUDA_RUNTIME_VERSION=12.9.79
 
 # ======================================== Setup ================================================
 WORKDIR /root/
@@ -105,14 +104,13 @@ RUN pip install /tmp/wheels/flash_attn-*.whl
 
 # =========================== Mooncake structured object store ===========================
 
-# The base image's mooncake is an older source build; its store.so shadows the wheel, whose store.so links libcudart (userspace only, no NVIDIA GPU).
+# make install lays down mooncake's native modules but not its pure Python files, so take
+# those from the wheel and leave the HIP-linked native build the rest of the image uses.
 RUN set -eux; \
-    pip install --force-reinstall --no-deps "mooncake-transfer-engine-non-cuda==${MOONCAKE_VERSION}"; \
-    pip install "nvidia-cuda-runtime-cu12==${CUDA_RUNTIME_VERSION}"; \
-    SP="$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"; \
-    rm -f "$SP"/mooncake/store.cpython-*.so /usr/local/bin/mooncake_master; \
-    cp "$SP"/nvidia/cuda_runtime/lib/libcudart.so.12 "$SP"/mooncake_transfer_engine_non_cuda.libs/; \
-    python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto; from mooncake.engine import TransferEngine; from mooncake.store import MooncakeDistributedStore as S; assert 'config: dict' in (S.setup.__doc__ or ''), 'stale store.so from the base image still wins'"
+    pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==${MOONCAKE_VERSION}"; \
+    cp -n /tmp/mc/mooncake/*.py "$(python3 -c 'import mooncake, os; print(os.path.dirname(mooncake.__file__))')"; \
+    rm -rf /tmp/mc; \
+    python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto; from mooncake.engine import TransferEngine"
 
 RUN pip install flash-linear-attention==0.4.2
 
