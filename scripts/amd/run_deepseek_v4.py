@@ -61,8 +61,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ] = "DeepSeek-V4-Flash-FP8"
 
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
-    # Default OFF: 16k eval (--eval-interval 20, AIME 240 gens) takes ~14min and blocks step-0/step-20,
-    # slowing the training-flow watch. Re-enable with --enable-eval for a dedicated AIME-score run (task #15).
+    # Off by default: a 16k AIME eval takes ~14min and blocks whichever step it lands on.
     enable_eval: bool = False
     enable_mtp: bool = False
 
@@ -209,11 +208,7 @@ def _prepare_spmd(args: ScriptArgs):
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 8 "
         )
     elif actor_num_nodes > 1 and not is_4layer:
-        # Same-topology conversion: build torch_dist in the TRAINING parallel layout
-        # (TP8/PP4/EP8, decoder 11/../10) so training load needs NO reshard -> each rank
-        # reads only its own shard -> small DCP LoadPlan -> avoids the central
-        # determine_global_metadata all_gather/pickle hang. Reuse the exact train
-        # topology so convert and train can never diverge.
+        # Convert in the training layout so the load needs no reshard and each rank reads only its own shard.
         extra_args = _get_parallel_config(args)
     else:
         raise NotImplementedError(
@@ -298,12 +293,8 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-tensor-parallel-size 1 "
             )
         if total_gpus == 16:  # 2 nodes x 8 (2+2 disagg async): TP2/PP4/EP4, DP = 16/(TP2*PP4) = 2.
-            # DP=2 is the point: it shards the fp32 Adam 2-way (vs TP8/DP1 which keeps FULL Adam/GPU and
-            # needs 0.75 host-offload) -> 291B FP8 fits 16 GPU with host RAM to spare (~862G free/node).
-            # TP: TP1 (blog) needs the sparse-MLA fwd kernel at 202KB smem > gfx950's 160KB; TP2 drops it to
-            # ~172KB (still 8KB over) -> ALSO cap the kernel's pipeline to num_stages=1 on HIP
-            # (tilelang_sparse_mla_fwd.py) to fit. TP2 also enables --sequence-parallel (TP>1).
-            # 43 layers = 11+11+11+10 (same pipeline depth as the 32-GPU config).
+            # TP2 is the smallest TP that fits the sparse-MLA fwd kernel in gfx950's smem, and DP=2 shards
+            # the fp32 Adam so 291B fits 16 GPU without host offload.
             return (
                 "--tensor-model-parallel-size 2 "
                 "--sequence-parallel "
@@ -364,13 +355,13 @@ def _train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 16384 "  # 16k default (2026-07-21, experiments default 16k). AIME needs full CoT; 8k truncated ~35%. 16k runs on 4 nodes ONLY with --sglang-mem-fraction-static 0.5 + --optimizer-offload-fraction 0.6 (else step-2 resume host-OOMs, see JOURNEY P1) -- submit must pass those.
+                f"--rollout-max-response-len 16384 "  # AIME needs the full CoT; 8k truncated ~35% of answers.
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 16384 "  # 4k→16k: AIME needs full CoT (4k truncated 57% of answers, depressing the score)
+                "--eval-max-response-len 16384 "
             )
         case "gsm8k":
             rollout_args += (
@@ -416,14 +407,10 @@ def _train(args: ScriptArgs):
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
         if args.actor_num_nodes == 4:
-            # 4-node PP4 memory balance. The three memory knobs below are a set: 0.75 offload put
-            # ~1TB/node of optimizer state on the host and the box died at 98.7% of 1.5TB, while
-            # mem-fraction 0.6 left a 95.4GB KV pool that no longer fit the 80.6GB free at the
-            # step-1 resume. Both walls were hit on 2026-07-27. This is the combination JOURNEY P1
-            # verified for 30 steps at 16k response length; do not move one knob on its own.
+            # These three memory knobs are a set: 0.75 offload host-OOMed and mem-fraction 0.6 left a KV
+            # pool that no longer fit at the step-1 resume. Do not move one on its own.
             optimizer_args += "--optimizer-offload-fraction 0.6 " "--no-offload-train "
-            # Pause only the KV cache during rollout, so the rollout weights are not copied to the
-            # host. Miles defaults to ["kv_cache", "weight"].
+            # Pause only the KV cache during rollout; miles defaults to ["kv_cache", "weight"].
             optimizer_args += "--offload-rollout-level kv_cache "
 
     sglang_world_size = 4
@@ -438,12 +425,6 @@ def _train(args: ScriptArgs):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
-        # gfx950: cuda-graph ENABLED (2026-07-14). Graph-safety validated on rocm720 (node-7 standalone: GSM8K 0.950,
-        # +2.5x = 1081 tok/gpu/s; the old topk_transform_512 concern is moot on 720). Colocate wedge risk (aiter custom-AR
-        # IPC buffer vs torch_memory_saver pause/resume, aiter #2061) is handled by SGLANG_MEMORY_SAVER_CUDA_GRAPH, which
-        # miles already turns on for every rollout engine in miles/ray/rollout/server_group.py
-        # (routes AR through the unreg capture path). NOTE: DSv4-Flash top-k runs the ROCm-registered
-        # deepseek_v4_topk_transform_512 op, NOT torch; --dsa-topk-backend only affects DSv3.2-DSA, inert here.
     )
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
@@ -465,7 +446,7 @@ def _train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
-        "--sglang-mem-fraction-static 0.5 "  # 4-node colocate: sizes the KV pool that resume has to remap in one block. 0.6 left a 95.4GB pool against 80.6GB free after the first optimizer step and hipMemCreate failed; 0.5 brings it to ~69GB. Pairs with --optimizer-offload-fraction 0.6.
+        "--sglang-mem-fraction-static 0.5 "  # part of the memory-knob set above
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
@@ -515,14 +496,6 @@ def _train(args: ScriptArgs):
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
 
-    # ROCm/gfx950: force Simple proto + disable MSCCL to avoid batch_isend_irecv PP
-    # p2p deadlock on RoCE. AMD multinode near-mandatory.
-    # Commented out 2026-07-27 alongside the Megatron gloo workarounds, to see which of
-    # these the run actually still needs. Put back if PP p2p hangs.
-    # extra_env_vars |= {
-    #     "NCCL_PROTO": "Simple",
-    #     "RCCL_MSCCL_ENABLE": "0",
-    # }
 
     if args.fp8_training:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
