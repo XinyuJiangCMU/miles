@@ -40,25 +40,8 @@ export SGLANG_USE_ROCM700A=0   # rocm720: rocm700 aiter fast-path off (validated
 export TORCHINDUCTOR_MAX_AUTOTUNE=1
 export TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
 
-# --- DSv4 indexer / MHC / MoE -> aiter/triton (sglang AMD CI COMMON_ENV_VARS) ---
-# NOTE: the rollout ENGINE's knobs live in run_deepseek_v4.py extra_env_vars, which is the only
-# channel that actually reaches the sglang engine. Do not duplicate them here.
-export SGLANG_OPT_DEEPGEMM_HC_PRENORM=false
-export SGLANG_OPT_USE_FUSED_COMPRESS=true
-export SGLANG_OPT_USE_FUSED_COMPRESS_TRITON=true
-export SGLANG_HACK_FLASHMLA_BACKEND=triton
-export SGLANG_OPT_FP8_WO_A_GEMM=false
-export SGLANG_OPT_USE_JIT_INDEXER_METADATA=false
-export SGLANG_OPT_USE_TOPK_V2=false
-export SGLANG_OPT_USE_AITER_INDEXER=false
-export SGLANG_OPT_USE_TILELANG_MHC_PRE=false
-export SGLANG_OPT_USE_TILELANG_MHC_POST=false
-export SGLANG_OPT_USE_MULTI_STREAM_OVERLAP=false
-export SGLANG_ROCM_USE_MULTI_STREAM=false
-export AITER_BF16_FP8_MOE_BOUND=0
-export SGLANG_DSV4_FP4_EXPERTS=false
-export SGLANG_OPT_USE_TILELANG_INDEXER=true
-export SGLANG_DSA_TOPK_BROADCAST=1
+# TransformerEngine, training side. The rollout ENGINE's knobs are NOT here: they live in
+# run_deepseek_v4.py extra_env_vars, which is where the audit in radixark/miles#1733 left them.
 export NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1
 
 # pin each aiter config to a single file (avoid colocate config-merge baton deadlock)
