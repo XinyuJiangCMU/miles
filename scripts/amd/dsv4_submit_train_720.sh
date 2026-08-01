@@ -1,6 +1,7 @@
 #!/bin/bash
-# DSv4-Flash FP8 colocate GRPO train — 4 node {4,6,8,9} rocm720, submit on head(node-4).
-source /opt/shared/hai/dsv4_env.sh
+# DSv4-Flash FP8 colocate GRPO train -- 4 node, rocm720, run inside the container on the ray head.
+# Cluster/head come from dsv4_env.sh (CLUSTER_MGMT_IPS); bring the cluster up with dsv4_cluster.sh.
+source "$(dirname "$(readlink -f "$0")")/dsv4_env.sh"
 export PYTHONUNBUFFERED=1
 cd /root/miles && export PYTHONPATH=/root/miles
 python scripts/amd/run_deepseek_v4.py train \

@@ -1,10 +1,24 @@
 #!/bin/bash
-# Sourced by head + worker. Full DSv4-Flash FP8 rollout env (from the 4-layer amd
-# script) + multi-node RoCE/RCCL env (from dsv4-4node-probe.md).
-export MASTER_ADDR=${MASTER_ADDR:-172.30.160.111}   # ray head mgmt IP (default node-4); override per deployment: MASTER_ADDR=<ip>
+# Sourced by the ray head and every worker. DSv4-Flash FP8 rollout env + multi-node RoCE/RCCL.
+#
+# Cluster selection is the only thing that changes between deployments, so it lives in one
+# variable and the head is the first IP. There is no per-cluster copy of this file.
+#
+#   default (node 1/3/5/7):  source dsv4_env.sh
+#   another cluster:         export CLUSTER_MGMT_IPS="172.30.160.111 172.30.160.201 172.30.160.126 172.30.160.127"; source dsv4_env.sh
+#   different head:          export MASTER_ADDR=172.30.160.131; source dsv4_env.sh
+#
+# Export it, do not use a "VAR=x source ..." prefix: bash treats `source` as a regular builtin, so
+# the prefix assignment is dropped again the moment the source returns.
+export CLUSTER_MGMT_IPS=${CLUSTER_MGMT_IPS:-"172.30.160.204 172.30.160.119 172.30.160.131 172.30.160.165"}
+export MASTER_ADDR=${MASTER_ADDR:-$(set -- $CLUSTER_MGMT_IPS; echo $1)}   # ray head mgmt IP
 export MILES_SCRIPT_EXTERNAL_RAY=1          # we start ray head/workers ourselves
 
-# --- Ray 心跳放宽（playbook §4.5：防 fabric 抖动误判节点死）---
+# no_proxy must cover EVERY node's mgmt IP, not just the head: pipeline group masters resolve to
+# non-head actor nodes, and a container proxy on that path blocks the Ray control plane.
+export no_proxy="127.0.0.1,localhost,$(echo $CLUSTER_MGMT_IPS $MASTER_ADDR | tr ' ' '\n' | awk '!seen[$0]++' | paste -sd,)"
+
+# --- Ray 心跳放宽(playbook §4.5:防 fabric 抖动误判节点死)---
 export RAY_health_check_failure_threshold=30
 export RAY_health_check_period_ms=10000
 export RAY_health_check_timeout_ms=30000
@@ -27,6 +41,8 @@ export TORCHINDUCTOR_MAX_AUTOTUNE=1
 export TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
 
 # --- DSv4 indexer / MHC / MoE -> aiter/triton (sglang AMD CI COMMON_ENV_VARS) ---
+# NOTE: the rollout ENGINE's knobs live in run_deepseek_v4.py extra_env_vars, which is the only
+# channel that actually reaches the sglang engine. Do not duplicate them here.
 export SGLANG_OPT_DEEPGEMM_HC_PRENORM=false
 export SGLANG_OPT_USE_FUSED_COMPRESS=true
 export SGLANG_OPT_USE_FUSED_COMPRESS_TRITON=true
@@ -43,7 +59,6 @@ export AITER_BF16_FP8_MOE_BOUND=0
 export SGLANG_DSV4_FP4_EXPERTS=false
 export SGLANG_OPT_USE_TILELANG_INDEXER=true
 export SGLANG_DSA_TOPK_BROADCAST=1
-export SGLANG_OPT_USE_COMPRESSOR_V2=false
 export NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1
 
 # pin each aiter config to a single file (avoid colocate config-merge baton deadlock)
@@ -62,14 +77,8 @@ export NCCL_IB_GID_INDEX=1                  # RoCEv2 IPv4
 export NCCL_SOCKET_IFNAME=enp81s0f1np1      # bootstrap on mgmt net, NOT fabric /31
 export GLOO_SOCKET_IFNAME=enp81s0f1np1
 export NCCL_NET_GDR_LEVEL=SYS               # GPUDirect RDMA
-export NCCL_MIN_NCHANNELS=16                # playbook: 16稳/32max/64hang（原112太高有hang风险）
+export NCCL_MIN_NCHANNELS=16                # playbook: 16 稳 / 32 max / 64 hang(原 112 太高有 hang 风险)
 export NCCL_MAX_NCHANNELS=16
-# BRING-UP (2+2 disagg): the FIRST cross-domain (actor<->rollout) weight-transfer NCCL group
-# hangs establishing RoCE transport (py-spy: all 17 ranks spin 99%CPU/0%GPU in broadcast, ~30min timeout).
-# Force TCP over the mgmt net for now (weight-sync is ~5% of step, not hot path). TODO: targeted RoCE fix
-# (device_id + explicit timeout in broadcast.py:193-199) so training collectives keep 378GB/s GDR.
-export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-0}   # colocate default 0 (RoCE on for train-collective speed; colocate has NO cross-domain weight-transfer group so no hang). 2+2 disagg bring-up overrides to 1 via -e (disk-delta cross-domain NCCL hang workaround).
-# no_proxy must cover ALL node mgmt IPs (pp_2/pp_3 group masters resolve to actor node-8=.126), else a
-# container proxy can block the Ray control path to non-head masters. 4=.111 6=.201 8=.126 9=.127.
-export no_proxy="127.0.0.1,localhost,172.30.160.111,172.30.160.201,172.30.160.126,172.30.160.127,${MASTER_ADDR}"
-
+# Colocate keeps RoCE on (0) for train-collective speed: there is no cross-domain actor<->rollout
+# weight-transfer group here, so the RoCE-transport establish hang cannot occur.
+export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-0}
