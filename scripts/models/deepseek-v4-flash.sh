@@ -62,15 +62,6 @@ MODEL_ARGS=(
     --moe-grouped-gemm
     --moe-router-topk-scaling-factor 1.5
 
-    # MTP (native Megatron arg; builds the MTP head so HF->torch_dist conversion
-    # carries mtp.layers.0.*. --mtp-loss-scaling-factor is passed by the run
-    # script at training time and is not needed for conversion.)
-    # Commented out 2026-07-27 to test whether a frozen-MTP run needs the training-side
-    # MTP head at all. The torch_dist checkpoint was converted WITH it and carries 558
-    # mtp.* keys, so the open question is whether the loader tolerates keys that have no
-    # matching parameter. Put this line back if the load fails.
-    # --mtp-num-layers 1
-
     # DSV4 specific
     --experimental-attention-variant dsv4
     --dsv4-hc-mult 4

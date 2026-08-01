@@ -63,9 +63,8 @@ def sparse_mqa_fwd(
 
     is_hip = getattr(torch.version, "hip", None)
     if is_hip:
-        # gfx950 has 160KB dynamic shared memory; num_stages=2 double-buffers KV_shared and overflows
-        # (~172KB) for DSv4-Flash sparse-MLA tiles — both the 64-head and the padded_H<64 cases. The
-        # upstream H_per_block==64 guard misses our TP2 shape, so cap at 1 for all HIP tiles.
+        # num_stages=2 double-buffers KV_shared past gfx950's 160KB LDS; the upstream H_per_block==64
+        # guard misses our TP2 shape.
         kernel_num_stages = min(num_stages, 1)
     else:
         kernel_num_stages = num_stages

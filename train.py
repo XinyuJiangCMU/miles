@@ -44,8 +44,7 @@ async def train(args):
 
     maybe_start_mini_ft_controller(args)
 
-    # engine starts memory-saver-paused; resume weights unconditionally so the first update_weights
-    # copies into a mapped buffer (only the per-step LOOP onload is tag-gated, mirroring the loop offload).
+    # The engine starts memory-saver-paused, so the first update_weights needs a mapped buffer.
     if args.offload_rollout:
         await rollout_manager.onload_weights.remote()
 
