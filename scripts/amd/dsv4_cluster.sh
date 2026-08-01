@@ -15,7 +15,8 @@
 # Cluster/head selection comes from dsv4_env.sh (CLUSTER_MGMT_IPS / MASTER_ADDR); nothing is
 # hardcoded per cluster here.
 set -e
-VERB=${1:?usage: dsv4_cluster.sh {container|head|worker|stop}}
+VERB=$1
+if [ -z "$VERB" ]; then echo "usage: dsv4_cluster.sh {container|head|worker|stop}" >&2; exit 2; fi
 HERE=$(dirname "$(readlink -f "$0")")
 ENV_FILE=${ENV_FILE:-$HERE/dsv4_env.sh}
 
