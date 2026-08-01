@@ -446,20 +446,14 @@ def _train(args: ScriptArgs):
         # deepseek_v4_topk_transform_512 op, NOT torch; --dsa-topk-backend only affects DSv3.2-DSA, inert here.
     )
     extra_env_vars = {
-        # -- checkpoint / expert layout (load-bearing for the FP8-repackaged DSv4-Flash ckpt) --
-        "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",   # skip strict load-format validation for the repackaged ckpt
-        "SGLANG_DSV4_FP4_EXPERTS": "0",             # FP8 routed-expert layout (env default is mxfp4); also disables auto-detect
-        # -- rollout kernel selection on gfx950 (each flips a default; verified load-bearing) --
-        "SGLANG_HACK_FLASHMLA_BACKEND": "triton",   # sparse-MLA decode kernel (default "tilelang")
+        "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
+        "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
         "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
-        "SGLANG_OPT_USE_COMPRESSOR_V2": "false",    # HIP compressor v1 (NEEDS-TEST vs v2); gates USE_FUSED_COMPRESS below
-        "SGLANG_OPT_USE_FUSED_COMPRESS": "true",    # v1 CompressorHip fused path -- live *because* COMPRESSOR_V2=false
-        # -- infra --
-        "SGLANG_HEALTH_CHECK_TIMEOUT": "120",       # 20->120s: tolerate slow ROCm warmup / aiter GEMM tune under colocate
-        "AITER_BF16_FP8_MOE_BOUND": "0",            # aiter-internal MoE bf16<->fp8 bound; kept for DSv4-Flash-FP8 test parity
-        # NOTE: 13 other SGLANG_OPT_* knobs dropped as inert on DSv4-Flash/gfx950 -- either force-set to the same
-        # value by the server_args DeepseekV4+is_hip block (~3821-3832), equal to the platform default, on a CUDA-only
-        # path, or unread (FUSED_COMPRESS_TRITON hardcodes False; DSA_TOPK_BROADCAST is DSv3.2-only). See JOURNEY.
+        "SGLANG_OPT_USE_JIT_NORM": "false",  # JIT norm+RoPE increases logprobdiff on ROCm
+        "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
+        "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
+        "AITER_BF16_FP8_MOE_BOUND": "0",
     }
 
     misc_args = (
@@ -492,8 +486,8 @@ def _train(args: ScriptArgs):
     if args.enable_mis:
         misc_args += (
             "--use-tis "
-            "--custom-config-path examples/train_infer_mismatch_helper/mis.yaml "
-            "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
+            "--custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml "
+            "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
     if args.use_fault_tolerance:
