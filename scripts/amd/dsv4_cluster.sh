@@ -41,8 +41,20 @@ container)
     --ulimit memlock=-1 --ulimit stack=67108864 \
     -v /opt/shared:/opt/shared -v /mnt/data/data/hai:/workspace \
     "$IMG" sleep infinity
-  echo "container up on $(hostname); ibv check (want 9):"
-  docker exec "$NAME" bash -lc 'ibv_devices 2>/dev/null | tail -n +3 | wc -l' || echo "ibv_devices failed"
+  # The image ships one libionic userspace provider, but the ionic DKMS driver version differs per
+  # machine and each release renumbers the per-device uverbs ABI. A mismatch is silent: ibv_devices
+  # lists nothing and RCCL then hangs ~40min instead of failing. Push the host's own provider in
+  # whenever it differs -- it is the one that matches this kernel by construction.
+  LIB=/usr/lib/x86_64-linux-gnu
+  HOST_SO=$(readlink -f $LIB/libibverbs/libionic-rdmav34.so 2>/dev/null)
+  CTR_SO=$(docker exec "$NAME" readlink -f $LIB/libibverbs/libionic-rdmav34.so 2>/dev/null)
+  if [ -n "$HOST_SO" ] && [ "$(basename "$HOST_SO")" != "$(basename "$CTR_SO")" ]; then
+    echo "libionic mismatch: host $(basename "$HOST_SO") vs container $(basename "$CTR_SO") -> pushing host's"
+    docker cp "$HOST_SO" "$NAME:$LIB/$(basename "$HOST_SO")"
+    docker exec "$NAME" ln -sf "$LIB/$(basename "$HOST_SO")" $LIB/libibverbs/libionic-rdmav34.so
+  fi
+  echo "container up on $(hostname); ibv check (want 8 usable ionic):"
+  docker exec "$NAME" bash -lc 'ibv_devices 2>/dev/null | tail -n +3 | grep -c ionic_' || echo "ibv_devices failed"
   ;;
 
 head)

@@ -65,7 +65,9 @@ def sparse_mqa_fwd(
     if is_hip:
         # num_stages=2 double-buffers KV_shared past gfx950's 160KB LDS; the upstream H_per_block==64
         # guard misses our TP2 shape.
-        kernel_num_stages = min(num_stages, 1)
+        # kernel_num_stages = min(num_stages, 1)
+        # Limit pipeline buffering for 64-head HIP tiles to reduce LDS use.
+        kernel_num_stages = min(num_stages, 1) if H_per_block == 64 else num_stages
     else:
         kernel_num_stages = num_stages
 

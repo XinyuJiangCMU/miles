@@ -55,7 +55,16 @@ export AITER_CONFIG_GEMM_A4W4=$AC/a4w4_blockscale_tuned_gemm.csv
 export AITER_CONFIG_FMOE=$AC/tuned_fmoe.csv
 
 # --- Multi-node RoCE / RCCL (dsv4-4node-probe.md Block 2/3; 378 GB/s GDR verified) ---
-export NCCL_IB_HCA=ionic_0,ionic_1,ionic_2,ionic_3,ionic_4,ionic_5,ionic_7,ionic_8  # excl mgmt ionic_6
+# Which ionic HCAs to use is derived, not hardcoded: the device→NIC numbering differs per machine
+# (MI355X exposes ionic_0..8 and carries the 10.1.1.x fabric on ionic_6; the MI350X box exposes only
+# 8 ionic plus a bnxt_re in that slot and carries the fabric there instead). Rule that fits both:
+# take every ionic device except the one holding the 10.1.1.x fabric address. Hardcoding the MI355X
+# list on the MI350X box silently yields 7 HCAs against the others' 8.
+_fab_if=$(ip -4 -o addr show 2>/dev/null | awk '$4 ~ /^10\.1\.1\./ {print $2; exit}')
+export NCCL_IB_HCA=$(for d in /sys/class/infiniband/ionic_*; do
+    n=$(basename "$d"); net=$(ls "$d/device/net" 2>/dev/null | head -1)
+    [ -n "$net" ] && [ "$net" != "$_fab_if" ] && printf '%s,' "$n"
+  done | sed 's/,$//')
 export NCCL_IB_GID_INDEX=1                  # RoCEv2 IPv4
 export NCCL_SOCKET_IFNAME=enp81s0f1np1      # bootstrap on mgmt net, NOT fabric /31
 export GLOO_SOCKET_IFNAME=enp81s0f1np1

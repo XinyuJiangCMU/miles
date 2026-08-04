@@ -45,7 +45,6 @@ async def train(args):
 
     maybe_start_mini_ft_controller(args)
 
-    # The engine starts memory-saver-paused, so the first update_weights needs a mapped buffer.
     if args.offload_rollout:
         await rollout_manager.onload_weights.remote()
 
@@ -128,10 +127,12 @@ async def train(args):
                 os.remove(args.save_trigger_sentinel)
 
         await offload_train()
-        if args.offload_rollout and "weight" in args.offload_rollout_level:
+        # if args.offload_rollout and "weight" in args.offload_rollout_level:
+        if args.offload_rollout:
             await rollout_manager.onload_weights.remote()
         await actor_model.update_weights(rollout_id=rollout_id)
-        if args.offload_rollout and "kv_cache" in args.offload_rollout_level:
+        # if args.offload_rollout and "kv_cache" in args.offload_rollout_level:
+        if args.offload_rollout:
             await rollout_manager.onload_kv.remote()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):

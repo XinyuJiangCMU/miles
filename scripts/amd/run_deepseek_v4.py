@@ -207,9 +207,9 @@ def _prepare_spmd(args: ScriptArgs):
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 8 "
         )
-    elif actor_num_nodes > 1 and not is_4layer:
-        # Convert in the training layout so the load needs no reshard and each rank reads only its own shard.
-        extra_args = _get_parallel_config(args)
+    # elif actor_num_nodes > 1 and not is_4layer:
+    #     # Convert in the training layout so the load needs no reshard and each rank reads only its own shard.
+    #     extra_args = _get_parallel_config(args)
     else:
         raise NotImplementedError(
             f"No verified SPMD conversion config for {args.model_name} "
@@ -292,18 +292,18 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
-        if total_gpus == 16:  # 2 nodes x 8 (2+2 disagg async): TP2/PP4/EP4, DP = 16/(TP2*PP4) = 2.
-            # TP2 is the smallest TP that fits the sparse-MLA fwd kernel in gfx950's smem, and DP=2 shards
-            # the fp32 Adam so 291B fits 16 GPU without host offload.
-            return (
-                "--tensor-model-parallel-size 2 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 4 "
-                "--decoder-last-pipeline-num-layers 10 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 4 "
-                "--expert-tensor-parallel-size 1 "
-            )
+        # if total_gpus == 16:  # 2 nodes x 8 (2+2 disagg async): TP2/PP4/EP4, DP = 16/(TP2*PP4) = 2.
+        #     # TP2 is the smallest TP that fits the sparse-MLA fwd kernel in gfx950's smem, and DP=2 shards
+        #     # the fp32 Adam so 291B fits 16 GPU without host offload.
+        #     return (
+        #         "--tensor-model-parallel-size 2 "
+        #         "--sequence-parallel "
+        #         "--pipeline-model-parallel-size 4 "
+        #         "--decoder-last-pipeline-num-layers 10 "
+        #         "--context-parallel-size 1 "
+        #         "--expert-model-parallel-size 4 "
+        #         "--expert-tensor-parallel-size 1 "
+        #     )
 
     raise NotImplementedError(
         f"No pre-set parallel config for {total_gpus} GPUs. "
@@ -410,8 +410,8 @@ def _train(args: ScriptArgs):
             # These three memory knobs are a set: 0.75 offload host-OOMed and mem-fraction 0.6 left a KV
             # pool that no longer fit at the step-1 resume. Do not move one on its own.
             optimizer_args += "--optimizer-offload-fraction 0.6 " "--no-offload-train "
-            # Pause only the KV cache during rollout; miles defaults to ["kv_cache", "weight"].
-            optimizer_args += "--offload-rollout-level kv_cache "
+            # Back on the miles default ["kv_cache", "weight"] to match the NV path.
+            # optimizer_args += "--offload-rollout-level kv_cache "
 
     sglang_world_size = 4
     sglang_tp_size = 4
@@ -449,7 +449,7 @@ def _train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
-        "--sglang-mem-fraction-static 0.5 "  # part of the memory-knob set above
+        "--sglang-mem-fraction-static 0.5 "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
