@@ -281,9 +281,9 @@ def _get_parallel_config(args: ScriptArgs) -> str:
         )
 
     if actor_num_gpus_per_node == 8:
-        if total_gpus == 32:  # 4 nodes x 8 GPUs (MI355X, full Flash): TP8/PP4/EP8, 43 layers = 11+11+11+10
+        if total_gpus == 32:  # 4 nodes x 8 GPUs (MI355X, full Flash): TP4/PP4/EP8, 43 layers = 11+11+11+10
             return (
-                "--tensor-model-parallel-size 8 "
+                "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 4 "
                 "--decoder-first-pipeline-num-layers 11 "
@@ -429,9 +429,12 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
-        "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
+        "SGLANG_HACK_FLASHMLA_BACKEND": "unified_kv_triton",
+        # unified_kv lives in compressor_v2 only; on HIP the v1 path leaves
+        # compress_kv_pool unset and the memory pool asserts on it.
+        "SGLANG_OPT_USE_COMPRESSOR_V2": "true",
         "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
-        "SGLANG_OPT_USE_JIT_NORM": "false",  # JIT norm+RoPE increases logprobdiff on ROCm
+        "SGLANG_OPT_USE_JIT_NORM": "true",
         "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "AITER_BF16_FP8_MOE_BOUND": "0",
