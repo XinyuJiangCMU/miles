@@ -19,6 +19,10 @@ VERB=$1
 if [ -z "$VERB" ]; then echo "usage: dsv4_cluster.sh {container|head|worker|stop}" >&2; exit 2; fi
 HERE=$(dirname "$(readlink -f "$0")")
 ENV_FILE=${ENV_FILE:-$HERE/dsv4_env.sh}
+# Ray's dashboard agent port is fixed (52365) and is NOT retried on a different port: if another
+# tenant's ray already holds it, our agent dies, "agent info" never lands in the internal KV, and
+# ray job submit fails with a 500 half a minute later. Override it when sharing nodes.
+RAY_AGENT_PORT=${RAY_AGENT_PORT:-52365}
 
 case "$VERB" in
 
@@ -50,7 +54,8 @@ head)
   #                               continuation, hence this block.)
   # --dashboard-host 0.0.0.0    : the job-submit port must listen on all interfaces, not localhost
   ray start --head --node-ip-address "${MASTER_ADDR}" --port 6379 --num-gpus 8 \
-    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265 \
+    --dashboard-agent-listen-port "${RAY_AGENT_PORT}"
   echo "=== ray status ==="
   ray status
   ;;
@@ -65,7 +70,8 @@ worker)
   ray stop --force >/dev/null 2>&1 || true
   sleep 3
   ray start --address="${MASTER_ADDR}:6379" --node-ip-address "${MYIP}" \
-    --num-gpus 8 --disable-usage-stats
+    --num-gpus 8 --disable-usage-stats \
+    --dashboard-agent-listen-port "${RAY_AGENT_PORT}"
   ;;
 
 stop)
