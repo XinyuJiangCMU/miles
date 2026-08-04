@@ -501,9 +501,10 @@ def _train(args: ScriptArgs):
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
         # gfx950 uses blockwise FP8 with fp32 scales.
         misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"1"}' """
-        # ROCm TE MoE FP8 lacks fused wgrad accumulation; disable the fusion.
-        # Commented out 2026-08-04 to retest whether the TE build still needs it.
-        # misc_args += "--no-gradient-accumulation-fusion "
+        # ROCm TE MoE FP8 lacks fused wgrad accumulation; disable the fusion. Retested
+        # 2026-08-04 on the rocm720-20260801 image (aiter 07-29, Megatron 07-29, TE 2.14.0.dev0)
+        # and it still raises NotImplementedError in the wgrad of the first actor_train.
+        misc_args += "--no-gradient-accumulation-fusion "
 
     if args.enable_mtp:
         sglang_args += (
