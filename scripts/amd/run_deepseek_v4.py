@@ -61,7 +61,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ] = "DeepSeek-V4-Flash-FP8"
 
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
-    # Off by default: a 16k AIME eval takes ~14min and blocks whichever step it lands on.
+    # Off by default: the AIME eval blocks whichever step it lands on for over ten minutes.
     enable_eval: bool = False
     enable_mtp: bool = False
 
@@ -355,13 +355,13 @@ def _train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 16384 "  # AIME needs the full CoT; 8k truncated ~35% of answers.
+                f"--rollout-max-response-len 8192 "
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
                 "--n-samples-per-eval-prompt 8 "
-                "--eval-max-response-len 16384 "
+                "--eval-max-response-len 8192 "
             )
         case "gsm8k":
             rollout_args += (
@@ -502,7 +502,8 @@ def _train(args: ScriptArgs):
         # gfx950 uses blockwise FP8 with fp32 scales.
         misc_args += """--train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"1"}' """
         # ROCm TE MoE FP8 lacks fused wgrad accumulation; disable the fusion.
-        misc_args += "--no-gradient-accumulation-fusion "
+        # Commented out 2026-08-04 to retest whether the TE build still needs it.
+        # misc_args += "--no-gradient-accumulation-fusion "
 
     if args.enable_mtp:
         sglang_args += (
