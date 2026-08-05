@@ -67,13 +67,6 @@ def get_args():
     def ceildiv(a, b):
         return -(a // -b)
 
-    # With EP > 1, forcing PP = world_size makes etp * ep * pp exceed it and initialize_model_parallel raises.
-    # if (
-    #     args.pipeline_model_parallel_size == 1
-    #     and world_size > 1
-    #     and args.expert_model_parallel_size == 1
-    #     and not os.environ.get("CONVERT_KEEP_PP1")
-    # ):
     if args.pipeline_model_parallel_size == 1 and world_size > 1 and not os.environ.get("CONVERT_KEEP_PP1"):
         pp_size = world_size
         while True:

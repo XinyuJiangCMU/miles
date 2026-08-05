@@ -207,9 +207,6 @@ def _prepare_spmd(args: ScriptArgs):
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 8 "
         )
-    # elif actor_num_nodes > 1 and not is_4layer:
-    #     # Convert in the training layout so the load needs no reshard and each rank reads only its own shard.
-    #     extra_args = _get_parallel_config(args)
     else:
         raise NotImplementedError(
             f"No verified SPMD conversion config for {args.model_name} "
@@ -292,18 +289,6 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
-        # if total_gpus == 16:  # 2 nodes x 8 (2+2 disagg async): TP2/PP4/EP4, DP = 16/(TP2*PP4) = 2.
-        #     # TP2 is the smallest TP that fits the sparse-MLA fwd kernel in gfx950's smem, and DP=2 shards
-        #     # the fp32 Adam so 291B fits 16 GPU without host offload.
-        #     return (
-        #         "--tensor-model-parallel-size 2 "
-        #         "--sequence-parallel "
-        #         "--pipeline-model-parallel-size 4 "
-        #         "--decoder-last-pipeline-num-layers 10 "
-        #         "--context-parallel-size 1 "
-        #         "--expert-model-parallel-size 4 "
-        #         "--expert-tensor-parallel-size 1 "
-        #     )
 
     raise NotImplementedError(
         f"No pre-set parallel config for {total_gpus} GPUs. "
@@ -407,11 +392,9 @@ def _train(args: ScriptArgs):
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
         if args.actor_num_nodes == 4:
-            # These three memory knobs are a set: 0.75 offload host-OOMed and mem-fraction 0.6 left a KV
-            # pool that no longer fit at the step-1 resume. Do not move one on its own.
+            # Pairs with --sglang-mem-fraction-static 0.5: 0.75 leaves no room for the KV pool to
+            # remap at the step-2 resume. Move the two together or not at all.
             optimizer_args += "--optimizer-offload-fraction 0.6 " "--no-offload-train "
-            # Back on the miles default ["kv_cache", "weight"] to match the NV path.
-            # optimizer_args += "--offload-rollout-level kv_cache "
 
     sglang_world_size = 4
     sglang_tp_size = 4

@@ -12,9 +12,7 @@
 #   --mtp          开冻结 MTP(EAGLE 投机解码)   (默认关)
 #   --extra "..."  额外透传给 --extra-args 的串   (默认空)
 #
-# 注:cuda-graph 默认就是开的(run_deepseek_v4.py:446 设 SGLANG_MEMORY_SAVER_CUDA_GRAPH=1),不用管。
-# mem-frac 0.5 + offload 0.6 是 JOURNEY P1 在 16k 上验过 30 步的组合(三个旋钮是一套,别单独动)。
-# 序列长度 2026-08-04 从 16k 降到 8k,内存旋钮沿用不变 —— 8k 更省,不会更紧。
+# mem-frac 0.5 + offload 0.6 是一对:0.6 躲 host 墙,0.5 躲 step-2 resume 的 GPU 墙。别单独动一个。
 # ============================================================================
 MEM_FRAC=0.5; OFFLOAD=0.6; SEQLEN=8192; WANDB=on; TAG=""; EXTRA=""; MTP=""
 while [[ $# -gt 0 ]]; do case "$1" in

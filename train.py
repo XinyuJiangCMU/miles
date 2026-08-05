@@ -127,11 +127,9 @@ async def train(args):
                 os.remove(args.save_trigger_sentinel)
 
         await offload_train()
-        # if args.offload_rollout and "weight" in args.offload_rollout_level:
         if args.offload_rollout:
             await rollout_manager.onload_weights.remote()
         await actor_model.update_weights(rollout_id=rollout_id)
-        # if args.offload_rollout and "kv_cache" in args.offload_rollout_level:
         if args.offload_rollout:
             await rollout_manager.onload_kv.remote()
 
