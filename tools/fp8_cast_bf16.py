@@ -40,6 +40,23 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> t
     return y
 
 
+# e2m1 code -> value. The index is the 4-bit code; the high bit carries the sign.
+_FP4_E2M1_MAGNITUDES = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+_FP4_E2M1_TABLE = torch.tensor(
+    _FP4_E2M1_MAGNITUDES + [-v for v in _FP4_E2M1_MAGNITUDES], dtype=torch.float32
+)
+
+
+def weight_dequant_fp4(x: torch.Tensor, s: torch.Tensor, group_size: int = 32) -> torch.Tensor:
+    """Dequantize an MXFP4 weight: each int8 packs two e2m1 values, low nibble first."""
+    assert x.dim() == 2 and s.dim() == 2
+    packed = x.view(torch.uint8)
+    codes = torch.stack([packed & 0x0F, packed >> 4], dim=-1)
+    y = _FP4_E2M1_TABLE.to(x.device)[codes.long()].flatten(1)
+    assert s.size(0) == y.size(0) and s.size(1) * group_size == y.size(1)
+    return (y * s.float().repeat_interleave(group_size, dim=1)).to(torch.get_default_dtype())
+
+
 def main(fp8_path, bf16_path):
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(bf16_path, exist_ok=True)
@@ -66,7 +83,7 @@ def main(fp8_path, bf16_path):
 
     # Cache for loaded safetensor files
     loaded_files = {}
-    fp8_weight_names = []
+    dequantized_weight_names = []
 
     # Helper function to get tensor from the correct file
     def get_tensor(tensor_name):
@@ -92,13 +109,18 @@ def main(fp8_path, bf16_path):
 
             if weight_name.endswith("_scale_inv"):
                 continue
-            elif weight.element_size() == 1:  # FP8 weight
+            elif weight.element_size() == 1:  # FP8 or packed-FP4 weight
                 scale_inv_name = f"{weight_name}_scale_inv"
                 try:
                     # Get scale_inv from the correct file
                     scale_inv = get_tensor(scale_inv_name)
-                    fp8_weight_names.append(weight_name)
-                    new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
+                    dequantized_weight_names.append(weight_name)
+                    # Packed FP4 and FP8 weights are both one byte per element, so the
+                    # scale dtype is what tells them apart.
+                    if scale_inv.dtype == torch.float8_e8m0fnu:
+                        new_state_dict[weight_name] = weight_dequant_fp4(weight, scale_inv)
+                    else:
+                        new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
                 except KeyError:
                     print(f"Warning: Missing scale_inv tensor for {weight_name}, skipping conversion")
                     new_state_dict[weight_name] = weight
@@ -116,12 +138,20 @@ def main(fp8_path, bf16_path):
 
     # Update model index
     new_model_index_file = os.path.join(bf16_path, "model.safetensors.index.json")
-    for weight_name in fp8_weight_names:
+    for weight_name in dequantized_weight_names:
         scale_inv_name = f"{weight_name}_scale_inv"
         if scale_inv_name in weight_map_renamed:
             weight_map_renamed.pop(scale_inv_name)
     with open(new_model_index_file, "w") as f:
         json.dump({"metadata": {}, "weight_map": weight_map_renamed}, f, indent=2)
+
+    # `expert_dtype` describes the on-disk expert precision, which is BF16 after the cast.
+    config_file = os.path.join(bf16_path, "config.json")
+    with open(config_file) as f:
+        config = json.load(f)
+    if config.pop("expert_dtype", None) is not None:
+        with open(config_file, "w") as f:
+            json.dump(config, f, indent=2)
 
 
 if __name__ == "__main__":
