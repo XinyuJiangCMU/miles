@@ -45,5 +45,5 @@ python scripts/amd/run_deepseek_v4.py train \
   --model-dir /workspace/models --model-local-dir /workspace/models \
   --data-dir /opt/shared/hai/datasets \
   --num-nodes 4 --num-gpus-per-node 8 --skip-saving $MTP --run-id "$TAG" \
-  --extra-args "--sglang-mem-fraction-static $MEM_FRAC --distributed-timeout-minutes 120 --optimizer-offload-fraction $OFFLOAD --offload-rollout-level kv_cache --rollout-max-response-len $SEQLEN $EXTRA" \
+  --extra-args "--sglang-mem-fraction-static $MEM_FRAC --distributed-timeout-minutes 120 --optimizer-offload-fraction $OFFLOAD --rollout-max-response-len $SEQLEN $EXTRA" \
   > "$LOG" 2>&1

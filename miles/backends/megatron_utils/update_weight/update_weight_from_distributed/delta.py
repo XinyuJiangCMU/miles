@@ -98,15 +98,6 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self._connection_stale = False
         self._group_name = "miles-disk-delta"
 
-    # disk-delta has no NCCL connection to go stale: the transport is the shared FS.
-    # def is_rollout_engines_fresh(self) -> bool:
-    #     return getattr(self, "rollout_engines", None) is not None and not getattr(
-    #         self, "_connection_stale", False
-    #     )
-    #
-    # def mark_engine_connection_stale(self) -> None:
-    #     self._connection_stale = True
-
     @property
     def _is_source(self):
         """If it's the source gpu producing the gathered HF tensors this rank publishes."""

@@ -236,8 +236,6 @@ def connect_rollout_engines_from_distributed(
         world_size=world_size,
         rank=0,
         group_name=group_name,
-        # torch>=2.9 infers the device inconsistently on cross-domain groups and ncclCommInitRank hangs.
-        # device_id=torch.device("cuda", torch.cuda.current_device()),
     )
     ray.get(refs)
     return model_update_groups
