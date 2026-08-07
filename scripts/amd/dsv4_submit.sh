@@ -37,6 +37,13 @@ export PYTHONUNBUFFERED=1
 cd /root/miles && export PYTHONPATH=/root/miles
 echo "[submit] tag=$TAG mem-frac=$MEM_FRAC offload=$OFFLOAD seq=$SEQLEN wandb=$WANDB wandb_key=$([ -n "$WANDB_API_KEY" ] && echo set || echo unset) log=$LOG"
 
+# NCCL_SOCKET_IFNAME / GLOO_SOCKET_IFNAME are dropped here on purpose. execute_train copies
+# whichever of them is set on the submitting host into the ray runtime env, which then overrides
+# every worker. The mgmt NIC is not named the same on every node (enp81s0f1np1 on the XAI boxes,
+# enx00e04c680080 on des2-2), so one broadcast value makes gloo fail with "Unable to find address"
+# on the odd one out. Each raylet already sourced dsv4_env.sh and holds its own correct value, and
+# workers inherit it as long as the runtime env does not overwrite it.
+env -u NCCL_SOCKET_IFNAME -u GLOO_SOCKET_IFNAME \
 python scripts/amd/run_deepseek_v4.py train \
   --model-name DeepSeek-V4-Flash-FP8 \
   --hf-checkpoint /workspace/models/DeepSeek-V4-Flash-FP8 \

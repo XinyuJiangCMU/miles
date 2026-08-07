@@ -55,19 +55,32 @@ export AITER_CONFIG_GEMM_A4W4=$AC/a4w4_blockscale_tuned_gemm.csv
 export AITER_CONFIG_FMOE=$AC/tuned_fmoe.csv
 
 # --- Multi-node RoCE / RCCL (dsv4-4node-probe.md Block 2/3; 378 GB/s GDR verified) ---
-# Which ionic HCAs to use is derived, not hardcoded: the device→NIC numbering differs per machine
-# (MI355X exposes ionic_0..8 and carries the 10.1.1.x fabric on ionic_6; the MI350X box exposes only
-# 8 ionic plus a bnxt_re in that slot and carries the fabric there instead). Rule that fits both:
-# take every ionic device except the one holding the 10.1.1.x fabric address. Hardcoding the MI355X
-# list on the MI350X box silently yields 7 HCAs against the others' 8.
-_fab_if=$(ip -4 -o addr show 2>/dev/null | awk '$4 ~ /^10\.1\.1\./ {print $2; exit}')
+# Both of these are derived, not hardcoded, because the naming differs per machine: the mgmt HCA is
+# ionic_6 on the XAI MI355X boxes but ionic_4 on des2-2, and the mgmt NIC is enp81s0f1np1 there but
+# enx00e04c680080 on des2-2. The invariants that do hold everywhere: the mgmt port is the only one on
+# MTU 1500 (fabric rails run 9144), and it is the only NIC on the 172.30.160.0/24 management subnet.
+# Selecting the mgmt HCA by subnet instead breaks across pods, where it carries 10.1.2.x not 10.1.1.x.
+# Liveness is read from the verbs layer, not sysfs. When a NIC's firmware admin queue wedges, the
+# port keeps reporting "4: ACTIVE" under /sys/class/infiniband/*/ports/1/state while ibv_devinfo
+# already says PORT_DOWN; node-4's ionic_3 died mid-run on 2026-08-06 and that stale sysfs state is
+# what made it look healthy in triage. Leaving a dead rail in this list does not fail at startup --
+# it fails partway into a collective with status=12 / ncclRemoteError, an hour into the job.
+# If ibv_devinfo is unavailable the device is kept: an empty NCCL_IB_HCA is worse than a stale one.
 export NCCL_IB_HCA=$(for d in /sys/class/infiniband/ionic_*; do
     n=$(basename "$d"); net=$(ls "$d/device/net" 2>/dev/null | head -1)
-    [ -n "$net" ] && [ "$net" != "$_fab_if" ] && printf '%s,' "$n"
+    [ -n "$net" ] || continue
+    [ "$(cat "/sys/class/net/$net/mtu" 2>/dev/null)" = 1500 ] && continue   # mgmt port, not a rail
+    if command -v ibv_devinfo >/dev/null 2>&1 \
+       && ! timeout 5 ibv_devinfo -d "$n" 2>/dev/null | grep -q PORT_ACTIVE; then
+      echo "[dsv4_env] WARN: $n ($net) is not PORT_ACTIVE -- dropped from NCCL_IB_HCA" >&2
+      continue
+    fi
+    printf '%s,' "$n"
   done | sed 's/,$//')
+_mgmt_if=$(ip -4 -o addr show 2>/dev/null | awk '$4 ~ /^172\.30\.160\./ {print $2; exit}')
 export NCCL_IB_GID_INDEX=1                  # RoCEv2 IPv4
-export NCCL_SOCKET_IFNAME=enp81s0f1np1      # bootstrap on mgmt net, NOT fabric /31
-export GLOO_SOCKET_IFNAME=enp81s0f1np1
+export NCCL_SOCKET_IFNAME=$_mgmt_if         # bootstrap on mgmt net, NOT fabric /31
+export GLOO_SOCKET_IFNAME=$_mgmt_if
 export NCCL_NET_GDR_LEVEL=SYS               # GPUDirect RDMA
 export NCCL_MIN_NCHANNELS=16                # playbook: 16 稳 / 32 max / 64 hang(原 112 太高有 hang 风险)
 export NCCL_MAX_NCHANNELS=16
