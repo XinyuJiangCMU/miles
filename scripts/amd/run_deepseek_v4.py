@@ -290,6 +290,20 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-tensor-parallel-size 1 "
             )
 
+        # 2 nodes x 8 GPUs (disaggregated training half): TP4/PP2/EP8, 43 layers = 22+21.
+        # Not validated by a run yet, unlike the entry above.
+        if total_gpus == 16:
+            return (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 2 "
+                "--decoder-first-pipeline-num-layers 22 "
+                "--decoder-last-pipeline-num-layers 21 "
+                "--context-parallel-size 1 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+
     raise NotImplementedError(
         f"No pre-set parallel config for {total_gpus} GPUs. "
         f"Please specify your parallel config in `run_deepseek_v4._get_parallel_config`."
