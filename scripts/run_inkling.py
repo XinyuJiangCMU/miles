@@ -102,7 +102,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     num_gpus_per_node: int = 4
     rollout_num_gpus_per_engine: int = 16
-    sglang_attention_backend: Literal["fa4", "triton"] = "fa4"
+    sglang_attention_backend: str = "fa4"
     lr: float | None = None
     rollout_max_response_len: int = 4096
     sglang_context_length: int = 8192

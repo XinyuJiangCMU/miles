@@ -17,7 +17,6 @@ rollout engine and SGLang EP follow the world size down from 8 to 4.
 
 import os
 
-from scripts.amd.run_qwen3_5_35b_a3b_mtp import configure_case
 from tests.ci.ci_register import register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, execute, prepare
@@ -44,11 +43,12 @@ CASE = CaseConfig(
     sglang_ep_size=4,
     enable_mtp_training=True,
     use_r3=True,
+    moe_token_dispatcher_type="alltoall",
+    extra_sglang_args="--sglang-disable-shared-experts-fusion ",
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),
 )
-CASE = configure_case(CASE)
 
 
 if __name__ == "__main__":
