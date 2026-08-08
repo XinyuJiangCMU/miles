@@ -6,6 +6,9 @@ from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
+if os.getenv("HARDWARE_BACKEND") == "rocm":
+    from scripts.amd.run_inkling import _train
+
 
 register_cuda_ci(
     est_time=1800,
@@ -14,9 +17,8 @@ register_cuda_ci(
 )
 register_rocm_ci(
     est_time=1800,
-    suite="stage-c-4-gpu-mi300x",
+    suite="stage-c-4-gpu-mi350",
     labels=["megatron", "model-scripts", "amd"],
-    disabled="Disable due to failure",
 )
 
 register_ci_gate(metric_key="train/grad_norm")

@@ -13,6 +13,9 @@ from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
+if os.getenv("HARDWARE_BACKEND") == "rocm":
+    from scripts.amd.run_glm5_2_744b_a40b import _execute_train
+
 # Smoke test for the GLM-5.2 (glm_moe_dsa) training script. Exercises the DSA
 # cross-layer index-sharing path (5 layers = 3 dense + 2 MoE, computing layers
 # 0,1,2 + skip layers 3,4). Verifies the script is functional, not model accuracy.
@@ -21,9 +24,8 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
 register_rocm_ci(
     est_time=900,
-    suite="stage-c-4-gpu-mi300x",
+    suite="stage-c-4-gpu-mi350",
     labels=["megatron", "model-scripts", "amd"],
-    disabled="Disable due to failure",
 )
 
 register_ci_gate(metric_key="train/grad_norm")

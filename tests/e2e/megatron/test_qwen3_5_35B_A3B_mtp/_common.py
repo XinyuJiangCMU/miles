@@ -47,6 +47,8 @@ class CaseConfig:
     # mismatches become non-fatal). Cases pass ("visual",): miles has no VLM/vision
     # implementation on the training side, so those weights are never synced.
     check_weight_update_skip_list: tuple[str, ...] = ()
+    moe_token_dispatcher_type: str = "flex"
+    extra_sglang_args: str = ""
 
 
 def prepare(case: CaseConfig) -> None:
@@ -144,6 +146,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
     if case.use_r3:
         sglang_args += "--use-rollout-routing-replay "
+    sglang_args += case.extra_sglang_args
 
     # When MTP training is off the rollout still runs EAGLE spec from the checkpoint
     # draft; those draft weights just never get synced (see the mtp0 case + skip-list).
@@ -165,7 +168,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
         "--colocate "
-        "--moe-token-dispatcher-type flex "
+        f"--moe-token-dispatcher-type {case.moe_token_dispatcher_type} "
         "--rematerialize-param-from-master-weight "
     )
 

@@ -45,6 +45,7 @@ ARG MOONCAKE_VERSION=0.3.12.post1
 WORKDIR /root/
 
 ENV MAX_JOBS=${MAX_JOBS}
+ENV HARDWARE_BACKEND=rocm
 
 # Build configuration for the selected arch (gfx942 / gfx950).
 ENV GPU_ARCH=${GPU_ARCH}
