@@ -62,7 +62,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Literal
 
-import torch
 import typer
 
 import miles.utils.external_utils.command_utils as U
@@ -103,6 +102,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     num_gpus_per_node: int = 4
     rollout_num_gpus_per_engine: int = 16
+    sglang_attention_backend: str = "fa4"
     lr: float | None = None
     rollout_max_response_len: int = 4096
     sglang_context_length: int = 8192
@@ -349,11 +349,8 @@ def _train(args: ScriptArgs):
         if args.rollout_num_gpus_per_engine >= 16:
             sglang_args += "--no-offload-rollout --no-offload-train "
 
-    # FA4 is NVIDIA-only; inkling attention accepts only ("fa4", "triton"), so
-    # triton is the sole ROCm option.
-    attention_backend = "triton" if torch.version.hip is not None else "fa4"
     sglang_args += (
-        f"--sglang-attention-backend {attention_backend} "
+        f"--sglang-attention-backend {args.sglang_attention_backend} "
         "--sglang-moe-runner-backend triton "
         "--sglang-mamba-scheduler-strategy extra_buffer "
         "--sglang-enable-multimodal "
