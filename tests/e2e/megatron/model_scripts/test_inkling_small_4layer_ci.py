@@ -6,7 +6,7 @@ from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
-if os.getenv("MILES_HARDWARE_BACKEND") == "rocm":
+if os.getenv("HARDWARE_BACKEND") == "rocm":
     from scripts.amd.run_inkling import _train
 
 
