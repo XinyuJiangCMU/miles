@@ -1,23 +1,30 @@
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 
-# `no_limit` asserts max_concurrent >= 2 with --sglang-server-concurrency=999
-# and 50ms per-request latency. On CPU CI runners the request dispatch loop
-# serializes faster than the latency window, so observed max drops to 1 and
-# the assertion fails. Pinned to GPU until the assertion is rewritten to be
-# scheduler-independent.
+# Keep the CUDA lane disabled until the isolated client lifecycle is validated there.
 register_cuda_ci(
     est_time=60,
     suite="stage-b-2-gpu-h200",
     labels=[],
-    disabled="FIXME: re-enable after shared HTTP client concurrency is reset between cases.",
+    disabled="FIXME: validate the isolated HTTP client lifecycle on CUDA.",
+)
+register_amd_ci(
+    est_time=60,
+    suite="stage-b-2-gpu-mi35x",
+    labels=[],
 )
 
 import pytest
 
+from miles.utils import http_utils
 from tests.fast.rollout.inference_rollout.integration.utils import integration_env_config, load_and_call_train
 
 _DATA_ROWS = [{"input": f"What is 1+{i}?", "label": str(1 + i)} for i in range(10)]
 _BASE_ARGV = ["--rollout-batch-size", "4", "--n-samples-per-prompt", "2"]
+
+
+@pytest.fixture(autouse=True)
+def reset_http_client(monkeypatch) -> None:
+    monkeypatch.setattr(http_utils, "_http_client", None)
 
 
 @pytest.mark.parametrize(
