@@ -34,6 +34,7 @@ from ...training_utils.parallel import get_parallel_state, set_parallel_state
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
+from .precision import apply_fp32_master
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
 
 if TYPE_CHECKING:
@@ -109,6 +110,10 @@ class FSDPTrainRayActor(TrainRayActor):
                 trust_remote_code=True,
                 attn_implementation=self.args.attn_implementation,
             )
+
+        if self.args.keep_fp32_master:
+            logger.info("FP32 master weights enabled; rollout sync preserves checkpoint dtypes")
+            model = apply_fp32_master(model)
 
         model.train()
 

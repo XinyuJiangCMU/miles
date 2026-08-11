@@ -57,6 +57,7 @@ class UpdateWeight(abc.ABC):
 
         bucket = []
         bucket_size = 0
+        sync_dtypes = getattr(self.model, "_fsdp_sync_dtypes", None)
         for name, param in self.model.state_dict().items():
             param_size = param.numel() * param.element_size()
             if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
@@ -72,7 +73,8 @@ class UpdateWeight(abc.ABC):
                     placements=[Replicate()] * param.device_mesh.ndim,
                     async_op=True,
                 ).to_local()
-            bucket.append((name, param))
+            target_dtype = sync_dtypes.get(name) if sync_dtypes is not None else None
+            bucket.append((name, param, target_dtype))
             bucket_size += param_size
 
         if bucket:
@@ -88,8 +90,14 @@ class UpdateWeight(abc.ABC):
         dist.barrier(group=get_gloo_group())
 
     def wait_and_update_bucket_weights(self, bucket):
-        bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
-        self.update_bucket_weights(bucket, weight_version=self.weight_version)
+        resolved = []
+        for name, param, target_dtype in bucket:
+            if hasattr(param, "wait"):
+                param = param.wait()
+            if target_dtype is not None and param.dtype != target_dtype:
+                param = param.to(target_dtype)
+            resolved.append((name, param))
+        self.update_bucket_weights(resolved, weight_version=self.weight_version)
 
     @abc.abstractmethod
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:

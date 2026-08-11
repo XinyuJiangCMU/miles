@@ -1,6 +1,8 @@
 from argparse import Namespace
 from types import SimpleNamespace
 
+import torch
+
 from miles.backends.experimental.fsdp_utils import update_weight_utils
 
 
@@ -94,6 +96,31 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
         update_weight_utils.ray.get(self.rollout_engines[0].update_weights_from_tensor.remote())
 
 
+class _CapturingUpdater(update_weight_utils.UpdateWeight):
+    def connect_rollout_engines(
+        self,
+        rollout_engines,
+        rollout_engine_lock,
+        engine_gpu_counts=None,
+        engine_gpu_offsets=None,
+    ):
+        pass
+
+    def update_bucket_weights(self, named_tensors, weight_version=None):
+        self.captured = named_tensors
+
+
+class _AsyncTensor:
+    def __init__(self, name, tensor, events):
+        self.name = name
+        self.tensor = tensor
+        self.events = events
+
+    def wait(self):
+        self.events.append(f"wait:{self.name}")
+        return self.tensor
+
+
 def _resolve_refs(value):
     if isinstance(value, list):
         return [ref.resolve() for ref in value]
@@ -155,3 +182,26 @@ def test_fsdp_nonzero_rank_does_not_manage_engine_session(monkeypatch):
 
     assert events == ["barrier", "barrier", "barrier"]
     assert engine.submissions == []
+
+
+def test_fsdp_sync_casts_after_async_gather():
+    updater = _CapturingUpdater(
+        Namespace(update_weight_buffer_size=1024),
+        SimpleNamespace(),
+    )
+    events = []
+    bf16_source = torch.tensor([1.00390625], dtype=torch.float32)
+    fp32_source = torch.tensor([3.25], dtype=torch.float32)
+
+    updater.wait_and_update_bucket_weights(
+        [
+            ("bf16", _AsyncTensor("bf16", bf16_source, events), torch.bfloat16),
+            ("fp32", _AsyncTensor("fp32", fp32_source, events), torch.float32),
+        ]
+    )
+
+    assert events == ["wait:bf16", "wait:fp32"]
+    assert updater.captured[0][1].dtype is torch.bfloat16
+    assert torch.equal(updater.captured[0][1], bf16_source.to(torch.bfloat16))
+    assert updater.captured[1][1].dtype is torch.float32
+    assert torch.equal(updater.captured[1][1], fp32_source)

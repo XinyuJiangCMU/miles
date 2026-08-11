@@ -1,6 +1,6 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
@@ -10,9 +10,14 @@ register_cuda_ci(
     labels=["fsdp"],
     disabled="FSDP backend has known issues, not actively maintained",
 )
+register_amd_ci(
+    est_time=2200,
+    suite="stage-c-4-gpu-mi35x",
+    labels=["long"],
+)
 
 MODEL_NAME = "Qwen3-0.6B"
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 
 def prepare():
@@ -77,6 +82,7 @@ def execute():
         f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
         f"--rollout-num-gpus {NUM_GPUS // 2} "
         "--train-backend fsdp "
+        "--keep-fp32-master "
     )
 
     ci_args = (
