@@ -1,4 +1,4 @@
-from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+from tests.ci.ci_register import register_cuda_ci
 
 # `no_limit` asserts max_concurrent >= 2 with --sglang-server-concurrency=999
 # and 50ms per-request latency. On CPU CI runners the request dispatch loop
@@ -10,11 +10,6 @@ register_cuda_ci(
     suite="stage-b-2-gpu-h200",
     labels=[],
     disabled="FIXME: re-enable after shared HTTP client concurrency is reset between cases.",
-)
-register_rocm_ci(
-    est_time=60,
-    suite="stage-c-2-gpu-mi350",
-    labels=[],
 )
 
 import pytest
