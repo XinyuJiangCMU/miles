@@ -26,6 +26,8 @@ _RECORDING_METHODS: dict[str, Any] = {
     "continue_generation": None,
     "update_weight_version": None,
     "post_process_weights": None,
+    "begin_weight_update": None,
+    "end_weight_update": None,
     "init_weights_update_group": None,
     "destroy_weights_update_group": None,
     "update_weights_from_distributed": None,

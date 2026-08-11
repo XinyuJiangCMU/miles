@@ -540,6 +540,14 @@ class SGLangEngine(RayActor):
             },
         )
 
+    def begin_weight_update(self):
+        """Open a weight-update session on the engine."""
+        return self._make_request("begin_weight_update", {})
+
+    def end_weight_update(self):
+        """Close the active weight-update session on the engine."""
+        return self._make_request("end_weight_update", {})
+
     def update_weight_version(self, weight_version: str):
         return self._make_request(
             "update_weight_version",
