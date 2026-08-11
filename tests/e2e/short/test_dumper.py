@@ -19,7 +19,7 @@ if str(_MILES_ROOT) not in sys.path:
     sys.path.insert(0, str(_MILES_ROOT))
 
 import typer
-from tests.ci.ci_register import register_amd_ci, register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.conftest_dumper import (
     MEGATRON_PATCHER_YAMLS,
     SGLANG_SOURCE_PATCHER_CONFIG_YAML,
@@ -31,8 +31,7 @@ from tests.e2e.conftest_dumper import (
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
-register_amd_ci(est_time=2000, suite="stage-c-8-gpu-mi35x", labels=["short"])
+register_cuda_ci(est_time=1100, suite="stage-c-8-gpu-h100", labels=["short"])
 
 
 app: typer.Typer = typer.Typer()
@@ -88,11 +87,11 @@ def _resolve_mode(mode: str) -> tuple[str, str]:
 
 
 def prepare(dump_dir: str, mode: str) -> None:
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
-    U.exec_command(f"rm -rf {dump_dir}")
+    U.exec_command_cpu(f"rm -rf {dump_dir}")
 
     megatron_yaml: str = MEGATRON_PATCHER_YAMLS["bshd" if mode.endswith("_bshd") else "thd"]
     Path(MEGATRON_SOURCE_PATCHER_CONFIG_PATH).write_text(megatron_yaml)

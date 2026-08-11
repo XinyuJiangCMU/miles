@@ -2,9 +2,6 @@
 title: Search-R1 (Tool Use)
 description: Train a model to issue search queries, integrate observations, and answer multi-turn QA.
 ---
-
-# Search-R1 — Tool-augmented multi-turn RL
-
 **What you'll learn:** how to wire up a tool (web search) into a Miles training loop —
 custom multi-turn rollout, observation interleaving, reward function, and TIS to keep
 training stable when train ≠ inference.
@@ -17,13 +14,13 @@ This is a Miles-friendly reproduction of the original
 * `radixark/miles:latest` container.
 * Either a serper.dev API key (Google search backend) or ~135 GB free disk for the
   local Wikipedia retriever (see [appendix](#appendix-local-wikipedia-retriever)).
-* You completed [Customization](../user-guide/customization.md) — this example uses a
+* You completed [Customization](/user-guide/customization) — this example uses a
   custom rollout function and reward.
 
 ## Files
 
 ```text
-examples/search-r1/
+examples/experimental/search-r1/
 ├── generate_with_search.py       # custom rollout (multi-turn loop)
 ├── google_search_server.py       # serper.dev wrapper
 ├── local_search_server.py        # FastAPI server in front of FAISS index
@@ -59,7 +56,8 @@ python $WORK_DIR/scripts/data_process/qa_search_train_merge.py \
 ```bash
 hf download Qwen/Qwen2.5-3B --local-dir /root/Qwen2.5-3B
 cd /root/miles
-source scripts/models/qwen2.5-3B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen2.5-3B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen2.5-3B \
@@ -69,7 +67,7 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 ### 4. Run
 
 ```bash
-bash examples/search-r1/run_qwen2.5_3B.sh
+bash examples/experimental/search-r1/run_qwen2.5_3B.sh
 ```
 
 ## Configuration
@@ -144,7 +142,7 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
    learns to *predict the search results*, which is both wrong and wildly unhelpful.
 2. **Tokenization alignment.** The model must see and the trainer must score the
    *exact same tokens*. Pre-tokenizing vs. re-tokenizing at training time can drift —
-   that's where the [chat template verifier](../user-guide/agentic-chat-template.md)
+   that's where the [chat template verifier](/user-guide/agentic-chat-template)
    matters.
 
 ## Walkthrough — reward
@@ -175,8 +173,8 @@ the search results came from a stochastic environment, not the model.
 ```bash
 GRPO_ARGS+=( --use-tis )
 CUSTOM_ARGS+=(
-   --custom-config-path examples/train_infer_mismatch_helper/mis.yaml
-   --custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp
+   --custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml
+   --custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp
 )
 ```
 
@@ -234,7 +232,6 @@ conflicting with Miles.
 ### One-time setup
 
 ```bash
-# 1. Conda
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
 bash ~/miniconda.sh -b -p $HOME/miniconda3
 source ~/miniconda3/etc/profile.d/conda.sh
@@ -247,7 +244,7 @@ conda install faiss-gpu=1.8.0 -c pytorch -c nvidia -y
 
 # 2. Index + corpus (~135 GB)
 save_path=/root/Index
-python /root/miles/examples/search-r1/local_dense_retriever/download.py \
+python /root/miles/examples/experimental/search-r1/local_dense_retriever/download.py \
     --save_path $save_path
 cat $save_path/part_* > $save_path/e5_Flat.index
 gzip -d $save_path/wiki-18.jsonl.gz
@@ -257,7 +254,7 @@ gzip -d $save_path/wiki-18.jsonl.gz
 
 ```bash
 conda activate retriever
-python /root/miles/examples/search-r1/local_dense_retriever/retrieval_server.py \
+python /root/miles/examples/experimental/search-r1/local_dense_retriever/retrieval_server.py \
     --index_path /root/Index/e5_Flat.index \
     --corpus_path /root/Index/wiki-18.jsonl \
     --topk 3 \
@@ -274,5 +271,5 @@ restarts are 1–2 minutes.
 ```bash
 conda deactivate              # don't train inside the retriever env!
 cd /root/miles
-bash examples/search-r1/run_qwen2.5_3B.sh
+bash examples/experimental/search-r1/run_qwen2.5_3B.sh
 ```

@@ -1,18 +1,12 @@
 import os
 
-from tests.ci.ci_register import register_amd_ci, register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
-    est_time=600,
-    suite="stage-c-8-gpu-h100",
-    labels=["fsdp"],
-    disabled="FSDP backend has known issues, not actively maintained",
-)
-register_amd_ci(
     est_time=2200,
-    suite="stage-c-4-gpu-mi35x",
+    suite="stage-c-4-gpu-h200",
     labels=["long"],
 )
 
@@ -21,8 +15,8 @@ NUM_GPUS = 4
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
@@ -82,7 +76,6 @@ def execute():
         f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
         f"--rollout-num-gpus {NUM_GPUS // 2} "
         "--train-backend fsdp "
-        "--keep-fp32-master "
     )
 
     ci_args = (

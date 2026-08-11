@@ -37,6 +37,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     num_rollout: int = 3000
+    no_save: bool = False
     rollout_mxfp8: bool = False
     rollout_fp8: bool = False
     train_mxfp8: bool = False
@@ -56,13 +57,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     if args.from_bf16_ckpt:
-        U.exec_command(
+        U.exec_command_cpu(
             f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}-bf16"
         )
     else:
-        U.exec_command(
+        U.exec_command_cpu(
             f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
         )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -84,7 +85,7 @@ def _prepare_mxfp8_ckpt(args: ScriptArgs):
             extra_args += (
                 f" --extra-high-precision-layers-hf {' '.join(DEFAULT_MXFP8_EXTRA_HIGH_PRECISION_LAYERS_HF)} "
             )
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name}-bf16 "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
             f"{extra_args} "
@@ -94,7 +95,7 @@ def _prepare_mxfp8_ckpt(args: ScriptArgs):
 def _prepare_fp8_ckpt(args: ScriptArgs):
     """Convert BF16 checkpoint to block-quant FP8 (for sglang rollout, no MXFP8)."""
     if args.rollout_fp8:
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_fp8.py "
             f"--model-dir {args.model_dir}/{args.model_name}-bf16 "
             f"--save-dir {args.model_dir}/{args.model_name}-FP8 "
@@ -175,14 +176,13 @@ def _execute_train(args: ScriptArgs):
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-FP8"
     else:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}"
-    ckpt_args = (
-        f"--hf-checkpoint {hf_checkpoint}/ "
-        f"--ref-load {ref_load_path} "
-        f"--load {load_save_path} "
-        f"--save {load_save_path} "
-        f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
-        f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
-    )
+    ckpt_args = f"--hf-checkpoint {hf_checkpoint}/ " f"--ref-load {ref_load_path} " f"--load {load_save_path} "
+    if not args.no_save:
+        ckpt_args += (
+            f"--save {load_save_path} "
+            f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
+            f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
+        )
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -337,7 +337,7 @@ def _execute_train(args: ScriptArgs):
                 sglang_decode_max_bs = 256
                 sglang_args += (
                     f"--rollout-num-gpus-per-engine {sglang_world_size} "
-                    "--sglang-fp8-gemm-backend flashinfer_cutlass "
+                    "--sglang-fp8-gemm-backend flashinfer_trtllm "
                     "--sglang-moe-runner-backend flashinfer_trtllm_routed "
                     f"--sglang-tp-size {sglang_world_size} "
                     f"--sglang-dp-size {sglang_world_size} "
@@ -378,7 +378,7 @@ matchers:
     config: "bf16"
 """.strip()
                 if "--te-precision-config-file" not in args.extra_args:
-                    misc_args += f"--te-precision-config-file {U.save_to_temp_file(te_precision_config_text, 'yaml')} "
+                    misc_args += f"--te-precision-config-file {U.encode_pseudo_file(te_precision_config_text)} "
             else:
                 if args.use_single_node:
                     sglang_world_size = 2
@@ -419,8 +419,8 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
-            "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
+            "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
     train_args = (

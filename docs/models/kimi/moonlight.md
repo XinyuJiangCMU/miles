@@ -2,9 +2,6 @@
 title: Moonlight
 description: Single-node MoE recipe (8 GPU) — DAPO-style dynamic sampling and CPU Adam on by default.
 ---
-
-# Moonlight
-
 ## 1. Model Introduction
 
 [Moonlight](https://huggingface.co/moonshotai/Moonlight-16B-A3B) is Moonshot AI's compact MoE — 16 B total / 3 B active, trained with the Muon optimizer — and a useful single-node test target for MoE RL code changes before scaling to Kimi K2.
@@ -36,7 +33,8 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-20
 
 ```bash
 cd /root/miles
-source scripts/models/moonlight.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py moonlight)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
@@ -110,5 +108,5 @@ CPU Adam on:
 
 ## 6. Pairs Well With
 
-- [Rollout Routing Replay (R3)](../../advanced/miles-router.md)
-- [Low Precision RL](../../advanced/fp8-low-precision.md)
+- [Rollout Routing Replay (R3)](/advanced/miles-router)
+- [Low Precision RL](/advanced/fp8-low-precision)

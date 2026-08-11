@@ -2,9 +2,6 @@
 title: Qwen3.6
 description: Launch recipe for the dense Qwen3.6-27B with attention-output-gate.
 ---
-
-# Qwen3.6
-
 ## 1. Model Introduction
 
 [Qwen3.6](https://github.com/QwenLM/Qwen3) is the next iteration of Alibaba's
@@ -42,14 +39,14 @@ wider, deeper Qwen3.5 with the gated-attention design preserved.
 ```bash
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
-# Place the model checkpoint at /root/Qwen3.6-27B
 ```
 
 ### 3.2 HF → Megatron `torch_dist` conversion
 
 ```bash
 cd /root/miles
-source scripts/models/qwen3.6-27B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3.6-27B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen3.6-27B \
@@ -113,7 +110,7 @@ CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --
 
 ### 5.5 Notable quirks
 
-From `scripts/models/qwen3.6-27B.sh`:
+From `scripts/models/qwen3.6-27B.py`:
 
 - `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` — Qwen3.6 reuses the Qwen3.5 spec (gated attention, FP32 `A_log`).
 - `--rotary-base 10000000`, `--rotary-percent 0.25`.
@@ -121,10 +118,10 @@ From `scripts/models/qwen3.6-27B.sh`:
 - `--apply-layernorm-1p`, `--qk-layernorm`, `--group-query-attention`.
 - `--attention-output-gate`.
 
-See [Backends Beyond Megatron](../../advanced/architecture-support.md) for how miles
+See [Backends Beyond Megatron](/advanced/architecture-support) for how miles
 preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeline.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
+- [Backends Beyond Megatron](/advanced/architecture-support)
+- [FP8 & Low Precision](/advanced/fp8-low-precision)

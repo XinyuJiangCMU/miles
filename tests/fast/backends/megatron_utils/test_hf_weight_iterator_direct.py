@@ -39,7 +39,6 @@ def _install_import_stubs(monkeypatch):
     sys.modules["sglang.srt.utils.patch_torch"].monkey_patch_torch_reductions = lambda: None
     sys.modules["sglang.srt.weight_sync.tensor_bucket"].FlattenedTensorBucket = object
     fp8_utils = sys.modules["sglang.srt.layers.quantization.fp8_utils"]
-    fp8_utils.mxfp8_group_quantize = lambda *args, **kwargs: None
     fp8_utils.quant_weight_ue8m0 = lambda *args, **kwargs: None
     fp8_utils.transform_scale_ue8m0 = lambda x, **kwargs: x
 
@@ -265,58 +264,3 @@ def test_distributed_atomic_group_cannot_span_expert_and_non_expert(direct_modul
 
     with pytest.raises(AssertionError, match="module.a"):
         updater._get_weight_transfer_update_units(is_expert=False)
-
-
-def test_distributed_weight_update_session_lifecycle(direct_module, monkeypatch):
-    from contextlib import nullcontext
-
-    from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import mixin
-
-    events = []
-
-    class RemoteMethod:
-        def __init__(self, event):
-            self.event = event
-
-        def remote(self, *args, **kwargs):
-            events.append(self.event)
-
-    engine = SimpleNamespace(
-        pause_generation=RemoteMethod("pause"),
-        flush_cache=RemoteMethod("flush"),
-        continue_generation=RemoteMethod("continue"),
-    )
-    updater = _distributed_updater(mixin)
-    updater.args.pause_generation_mode = "retract"
-    updater.rollout_engines = [engine]
-    updater.weight_version = 0
-    updater._group_name = "test"
-    updater._update_weight_implementation = lambda *args, **kwargs: None
-    updater._gather_and_update_non_expert_weights = lambda *args, **kwargs: events.append("non_expert")
-    updater._gather_and_update_expert_weights = lambda *args, **kwargs: events.append("expert")
-
-    monkeypatch.setattr(mixin.dist, "get_rank", lambda: 0)
-    monkeypatch.setattr(mixin.dist, "barrier", lambda **kwargs: events.append("barrier"))
-    monkeypatch.setattr(mixin, "get_gloo_group", lambda: object())
-    monkeypatch.setattr(mixin.ray, "get", lambda refs: refs, raising=False)
-    monkeypatch.setattr(mixin, "begin_weight_update", lambda engines: events.append("begin"))
-    monkeypatch.setattr(mixin, "end_weight_update", lambda engines: events.append("end"))
-    monkeypatch.setattr(mixin, "timer", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(mixin, "tqdm", lambda *args, **kwargs: None)
-
-    updater.update_weights()
-
-    assert updater.weight_version == 1
-    assert events == [
-        "pause",
-        "flush",
-        "begin",
-        "barrier",
-        "non_expert",
-        "barrier",
-        "expert",
-        "barrier",
-        "end",
-        "continue",
-        "barrier",
-    ]

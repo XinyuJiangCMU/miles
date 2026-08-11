@@ -2,9 +2,6 @@
 title: Reproducibility Recipe
 description: Bit-stable training across reruns. Determinism flags, seeds, and what to watch.
 ---
-
-# Reproducibility Recipe
-
 **What you'll learn:** how to configure Miles + SGLang + Megatron for **bit-wise
 reproducible** RL training. Same inputs → identical outputs across reruns, machines,
 and time.
@@ -73,13 +70,14 @@ hf download --repo-type dataset openai/gsm8k         --local-dir /root/gsm8k
 hf download Qwen/Qwen2.5-0.5B-Instruct               --local-dir /root/Qwen2.5-0.5B-Instruct
 
 cd /root/miles
-source scripts/models/qwen2.5-0.5B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen2.5-0.5B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen2.5-0.5B-Instruct \
    --save           /root/Qwen2.5-0.5B-Instruct_torch_dist/
 
-bash examples/reproducibility/run-qwen2.5-0.5B-gsm8k.sh
+bash examples/experimental/reproducibility/run-qwen2.5-0.5B-gsm8k.sh
 ```
 
 ### 5. Verify

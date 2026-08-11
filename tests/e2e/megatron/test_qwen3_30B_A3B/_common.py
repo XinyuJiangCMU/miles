@@ -14,8 +14,9 @@ class CaseConfig:
     num_gpus_per_node: int
     cp_size: int
     pp_size: int
-    tp_size: int = None
-    ep_size: int = None
+    tp_size: int
+    ep_size: int
+    rollout_num_gpus_per_engine: int
     sglang_ep_size: int = None
     sglang_dp_size: int = None
     sglang_enable_dp_attention: bool = False
@@ -24,51 +25,42 @@ class CaseConfig:
     use_int4_rollout: bool = False
     use_bridge: bool = False
     use_r3: bool = False
+    use_mooncake: bool = False
     max_tokens_per_gpu: int = 8192
     colocate: bool = True
     rollout_num_gpus: int = None
-    rollout_num_gpus_per_engine: int = None
     update_weight_transfer_mode: str = None
+    num_rollout: int = 2
+    fully_async: bool = False
 
     def __post_init__(self):
+        # Validation only — topology values are passed explicitly, not inferred.
+        if self.fully_async and self.colocate:
+            raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
         if self.num_gpus_per_node % (self.cp_size * self.pp_size) != 0:
             raise ValueError(
                 "num_gpus_per_node must be divisible by cp_size * pp_size: "
                 f"{self.num_gpus_per_node=} {self.cp_size=} {self.pp_size=}"
             )
-        if self.tp_size is None:
-            self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
-        if self.ep_size is None:
-            self.ep_size = self.num_gpus_per_node // self.pp_size
-        # Align with arguments.py: colocated rollout reuses the actor GPU pool, so
-        # rollout_num_gpus resolves to num_gpus_per_node; disaggregated rollout keeps
-        # its own standalone rollout_num_gpus.
-        if self.colocate:
-            self.rollout_num_gpus = self.num_gpus_per_node
-        elif self.rollout_num_gpus is None:
+        if not self.colocate and self.rollout_num_gpus is None:
             raise ValueError("rollout_num_gpus must be set when colocate is False")
-        # EP spans the whole rollout pool so MoE experts shard across it, while
-        # attention stays DP within each engine (rollout_num_gpus_per_engine).
-        if self.rollout_num_gpus_per_engine is None:
-            self.rollout_num_gpus_per_engine = 1 if self.use_int4_rollout else self.rollout_num_gpus
-        if self.sglang_ep_size is None and self.use_deepep:
-            self.sglang_ep_size = self.rollout_num_gpus
-        if self.rollout_num_gpus % self.rollout_num_gpus_per_engine != 0:
+        rollout_pool = self.num_gpus_per_node if self.colocate else self.rollout_num_gpus
+        if rollout_pool % self.rollout_num_gpus_per_engine != 0:
             raise ValueError(
-                "rollout_num_gpus must be divisible by rollout_num_gpus_per_engine: "
-                f"{self.rollout_num_gpus=} {self.rollout_num_gpus_per_engine=}"
+                "rollout pool must be divisible by rollout_num_gpus_per_engine: "
+                f"{rollout_pool=} {self.rollout_num_gpus_per_engine=}"
             )
         if self.update_weight_transfer_mode is not None:
             assert self.update_weight_transfer_mode == "broadcast"
 
 
 def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
     if need_fp8:
-        U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
+        U.exec_command_cpu("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
     if need_int4:
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_int4_direct.py "
             f"--model-dir /root/models/{MODEL_NAME} "
             f"--save-dir /root/models/{MODEL_NAME}-INT4"
@@ -113,7 +105,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 2 "
+        f"--num-rollout {case.num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 8192 "
@@ -192,6 +184,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         sglang_args += "--sglang-enable-dp-attention "
 
     ci_args = "--ci-test "
+    if case.use_fp8_rollout or case.use_int4_rollout:
+        ci_args += "--check-weight-update-allow-quant-error "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -204,15 +198,21 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
     if case.colocate:
         misc_args += "--colocate "
+        misc_args += "--rematerialize-param-from-master-weight "
     else:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
 
     if case.update_weight_transfer_mode is not None:
-        misc_args += "--check-weight-update-equal "
         misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
 
     if case.use_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
+
+    if case.fully_async:
+        misc_args += "--fully-async "
+
+    if case.use_mooncake:
+        misc_args += U.get_mooncake_object_store_args()
 
     if case.use_deepep:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
@@ -248,5 +248,7 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
         train_args=train_args,
         num_gpus_per_node=case.num_gpus_per_node + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=MODEL_TYPE,
+        before_ray_job_submit=U.start_mooncake_master if case.use_mooncake else None,
+        train_script="train_async.py" if case.fully_async else "train.py",
         extra_env_vars=extra_env_vars,
     )

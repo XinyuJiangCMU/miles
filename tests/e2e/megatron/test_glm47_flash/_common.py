@@ -15,8 +15,8 @@ class CaseConfig:
     cp_size: int
     pp_size: int
     rollout_num_gpus_per_engine: int
-    tp_size: int = None
-    ep_size: int = None
+    tp_size: int
+    ep_size: int
     sglang_ep_size: int = None
     use_deepep: bool = False
     use_fp8_rollout: bool = False
@@ -25,18 +25,10 @@ class CaseConfig:
     use_r3: bool = False
     max_tokens_per_gpu: int = 8192
 
-    def __post_init__(self):
-        if self.tp_size is None:
-            self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
-        if self.ep_size is None:
-            self.ep_size = self.num_gpus_per_node // self.pp_size
-        if self.sglang_ep_size is None and self.use_deepep:
-            self.sglang_ep_size = self.num_gpus_per_node
-
 
 def prepare(case: CaseConfig) -> None:
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 

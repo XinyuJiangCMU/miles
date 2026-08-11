@@ -5,8 +5,7 @@ GLM-5 744B-A40B Training Script
 
 Tested on H200, B200, GB300
 
-For H200, B200, please use `radixark/miles:glm5` docker
-For GB300, please use `radixark/miles:glm5-gb300` docker
+Please use the `radixark/miles:dev` docker image.
 
 =====================
 
@@ -150,7 +149,7 @@ def _convert_to_fp8(args: ScriptArgs):
     """Convert HF checkpoint to FP8 (block quantization). Megatron still uses bf16."""
     src = f"{args.model_dir}/{args.model_name}"
     dst = f"{args.model_dir}/{args.model_name}_fp8"
-    U.exec_command(
+    U.exec_command_gpu(
         f"python tools/convert_hf_to_fp8.py "
         f"--model-dir {src} --save-dir {dst} "
         f"--strategy block --block-size 128 128"
@@ -158,8 +157,10 @@ def _convert_to_fp8(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
 
@@ -345,6 +346,7 @@ def _execute_train(args: ScriptArgs):
         # use flashmla backend for better precision
         "--sglang-nsa-decode-backend flashmla_sparse "
         "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-kv-cache-dtype bf16 "
         "--sglang-attention-backend nsa "
         "--sglang-page-size 64 "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
@@ -353,6 +355,12 @@ def _execute_train(args: ScriptArgs):
         f"--sglang-chunked-prefill-size {2048 * sglang_world_size} "
         "--sglang-watchdog-timeout 3600 "
     )
+    if args.hardware in ("B200", "GB300") and not (args.fp8_rollout and args.use_deepep):
+        # TODO: fix bf16 trtllm weight update
+        if args.fp8_rollout:
+            sglang_args += "--sglang-moe-runner-backend flashinfer_trtllm_routed "
+        else:
+            sglang_args += "--sglang-moe-runner-backend triton "
     sglang_extra_env_vars = {
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{32 if args.enable_pd else 256}",
         "SGLANG_NSA_FORCE_MLA": "1",
@@ -374,6 +382,7 @@ def _execute_train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
+        "--rematerialize-param-from-master-weight "
     )
 
     if args.megatron_use_deepep:

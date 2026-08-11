@@ -2,9 +2,6 @@
 title: Training Script Walkthrough
 description: An annotated tour through every argument group in a Miles launch script, plus the feature modes you turn on when a recipe isn't enough.
 ---
-
-# Training Script Walkthrough
-
 A Miles launch script is plain bash — a sequence of `XXX_ARGS=( ... )` arrays handed
 to `train.py` or `train_async.py`. This page walks through each group and then covers
 the execution modes you turn on beyond the default recipe.
@@ -18,29 +15,30 @@ off to `train.py`:
 
 | Array | Governs |
 |---|---|
-| [`MODEL_ARGS`](argument-groups.md#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
-| [`CKPT_ARGS`](argument-groups.md#ckpt-args) | Filesystem paths for the actor / reference / save directory |
-| [`ROLLOUT_ARGS`](argument-groups.md#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
-| [`EVAL_ARGS`](argument-groups.md#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
-| [`PERF_ARGS`](argument-groups.md#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
-| [`GRPO_ARGS`](argument-groups.md#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
-| [`OPTIMIZER_ARGS`](argument-groups.md#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
-| [`SGLANG_ARGS`](argument-groups.md#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
+| [`MODEL_ARGS`](/user-guide/argument-groups#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
+| [`CKPT_ARGS`](/user-guide/argument-groups#ckpt-args) | Filesystem paths for the actor / reference / save directory |
+| [`ROLLOUT_ARGS`](/user-guide/argument-groups#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
+| [`EVAL_ARGS`](/user-guide/argument-groups#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
+| [`PERF_ARGS`](/user-guide/argument-groups#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
+| [`GRPO_ARGS`](/user-guide/argument-groups#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
+| [`OPTIMIZER_ARGS`](/user-guide/argument-groups#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
+| [`SGLANG_ARGS`](/user-guide/argument-groups#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
 
 ---
 
 ## MODEL_ARGS — architecture constants
 
 Megatron needs the model architecture hardcoded at launch because it cannot introspect
-a HuggingFace checkpoint. Miles therefore sources a matching bash file from
-`scripts/models/<family>.sh`:
+a HuggingFace checkpoint. Miles therefore loads a matching python file from
+`scripts/models/<family>.py`:
 
 ```bash
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/glm4-9B.sh"
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" glm4-9B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 ```
 
-The sourced file sets `MODEL_ARGS=(--num-layers ... --hidden-size ... --rotary-base ...)`.
+The loaded file prints `--num-layers ... --hidden-size ... --rotary-base ...` on one line.
 
 <Warning>
 
@@ -49,7 +47,8 @@ padding, or normalization epsilon. Diff the `config.json` against the file in
 `scripts/models/` before you run, and override anything that drifts:
 
 ```bash
-source "${SCRIPT_DIR}/models/glm4-9B.sh"
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" glm4-9B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 MODEL_ARGS+=(--rotary-base 10000)
 ```
 
@@ -57,7 +56,7 @@ MODEL_ARGS+=(--rotary-base 10000)
 
 ## CKPT_ARGS — paths
 
-The three roles — actor, frozen reference, HuggingFace directory — are defined in [Core Concepts](concepts.md#the-four-objects). Here they map to four flags:
+The three roles — actor, frozen reference, HuggingFace directory — are defined in [Core Concepts](/user-guide/concepts#the-four-objects). Here they map to four flags:
 
 ```bash
 CKPT_ARGS=(
@@ -90,11 +89,11 @@ Their product is the total sample count produced each rollout.
 
 - `--global-batch-size` — samples used per optimizer step.
 - `--num-steps-per-rollout` — optimizer steps per rollout. Leave at `1` for strict
-  on-policy behaviour; raise it for off-policy reuse of rollout batches.
+  on-policy behavior; raise it for off-policy reuse of rollout batches.
 
 Their product is the total sample count consumed each rollout.
 
-These two products must be equal — that's the [four-knob invariant](concepts.md#the-four-knob-invariant). Set three sides; Miles fills in the fourth. Set all four and Miles validates the equation — inconsistent values abort early.
+These two products must be equal — that's the [four-knob invariant](/user-guide/concepts#the-four-knob-invariant). Set three sides; Miles fills in the fourth. Set all four and Miles validates the equation — inconsistent values abort early.
 
 **Outer loop**
 
@@ -136,7 +135,7 @@ regardless of how many optimizer steps fired in between.
 
 ## EVAL_ARGS — a strict subset of rollout
 
-Evaluation reuses the rollout machinery but lets you override sampling behaviour so
+Evaluation reuses the rollout machinery but lets you override sampling behavior so
 that eval is deterministic and comparable across runs.
 
 ```bash
@@ -223,7 +222,7 @@ A few design choices become visible here:
   or when you want length-proportional weighting.
 - **`--use-tis` is the numerical safety belt.** Switch it on when rollout and trainer
   operate at different precisions or when you explicitly want off-policy reuse. See
-  the R3 deep dive in [Rollout Routing Replay (R3)](../advanced/miles-router.md).
+  the R3 deep dive in [Rollout Routing Replay (R3)](/advanced/miles-router).
 
 ## OPTIMIZER_ARGS — nothing surprising
 
@@ -274,7 +273,6 @@ DP-attention is off, the effective `dp_size` is derived from
 
 ---
 
-# Execution modes
 
 The eight argument groups describe **what** you're training. The next set of sections
 describe **how** the training runs — the execution modes that flip Miles from its
@@ -291,12 +289,12 @@ Async rollout turns the cadence into two concurrent loops. A background worker k
 into a queue; the trainer drains the queue, steps, and syncs weights. Per-iteration
 wall time drops to roughly `max(rollout_time, train_time)`.
 
-Enable it with two changes to the launch script:
+Enable it with three changes to the launch script:
 
 ```diff
 - python3 train.py ...
-+ python3 train_async.py ...
-+   --rollout-function-path fully_async_rollout.generate_rollout_fully_async
++ MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 python3 train_async.py ...
++   --fully-async
 ```
 
 | Mode | Per-iteration latency | Throughput | When to use |
@@ -304,7 +302,7 @@ Enable it with two changes to the launch script:
 | Sync *(default)* | Lower | Lower overall | Strict on-policy, debugging |
 | Async | Higher | Up to 2× | Rollout-bound jobs, long runs |
 
-See the [Fully Async Rollout example](../examples/fully-async.md) for the full
+See the [Fully Async Rollout example](/examples/fully-async) for the full
 walkthrough including the worker implementation.
 
 ## Colocation: share GPUs or don't
@@ -351,7 +349,7 @@ collision produces an OOM before training ever starts. Drop
 
 - `--offload-train` — train state offloads to CPU between phases
 - `--offload-rollout` — rollout state offloads to CPU between phases
-- `--sglang-disable-piecewise-cuda-graph` — avoids NVLS OOM in colocate mode
+- `--sglang-cuda-graph-backend-prefill=disabled` — avoids NVLS OOM in colocate mode
 
 </Note>
 
@@ -394,6 +392,16 @@ not a stuck trainer.
 
 Dynamic sampling implies that *some* in-flight generations will be abandoned. Without
 care, the compute invested in those half-finished trajectories is lost.
+
+<Note>
+
+**Agentic rollouts.** When an external agent drives generation, aborting SGLang
+doesn't stop the agent — it keeps issuing requests until its own limit. Define an
+optional [`abort` hook](/user-guide/rollout-endpoints#optional-teardown-the-abort-hook)
+in your `--custom-agent-function-path` module so Miles can tell the agent backend
+to tear down its in-flight trials at abort time.
+
+</Note>
 
 `--partial-rollout` flips on a buffer that retains partial samples and resumes their
 generation during the next rollout. The buffer dequeue policy is itself pluggable via
@@ -458,15 +466,15 @@ KL anchor silently and makes the loss curve incomparable to earlier runs.
 </Warning>
 
 For end-to-end FP8 (trainer and inference at bit-identical precision), see
-[Low Precision RL](../advanced/fp8-low-precision.md). For INT4 quant-aware
-training, see [INT4 QAT](../advanced/int4-qat.md).
+[Low Precision RL](/advanced/fp8-low-precision). For INT4 quant-aware
+training, see [INT4 QAT](/advanced/int4-qat).
 
 ---
 
 ## Next
 
-- [Configuration](cli-reference.md) — the same material organized as a flag-by-flag
+- [Configuration](/user-guide/cli-reference) — the same material organized as a flag-by-flag
   reference.
-- [Server Arguments](cli-reference.md) — the complete CLI surface.
-- [Customization](customization.md) — the twenty-plus Python extension points.
-- [Training Backends](usage.md) — Megatron vs FSDP and each one's plumbing.
+- [Server Arguments](/user-guide/cli-reference) — the complete CLI surface.
+- [Customization](/user-guide/customization) — the twenty-plus Python extension points.
+- [Training Backends](/user-guide/usage) — Megatron vs FSDP and each one's plumbing.

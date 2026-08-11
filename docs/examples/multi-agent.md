@@ -2,9 +2,6 @@
 title: Multi-Agent Co-Evolution
 description: Two specialized agents train together and improve each other.
 ---
-
-# Multi-Agent Co-Evolution
-
 **What you'll learn:** how to wire up an asynchronous multi-agent system in Miles, where
 two (or more) specialized agents take alternating turns and the joint outcome drives a
 single shared reward.
@@ -22,14 +19,14 @@ you can hack on it without pulling in MrlX's full dependency tree.
 
 ## Prerequisites
 
-* You've completed the [Qwen3-30B-A3B](../models/qwen/qwen3-moe.md) recipe (the
+* You've completed the [Qwen3-30B-A3B](/models/qwen/qwen3-moe) recipe (the
   example uses that model).
-* Familiar with [Customization](../user-guide/customization.md).
+* Familiar with [Customization](/user-guide/customization).
 
 ## Files
 
 ```text
-examples/multi_agent/
+examples/experimental/multi_agent/
 ├── agent_system.py                       # the agent state machine
 ├── prompts.py                            # role / system prompts
 ├── rollout_with_multi_agents.py          # custom rollout (calls agent_system)
@@ -40,7 +37,7 @@ examples/multi_agent/
 
 ```bash
 cd /root/miles
-bash examples/multi_agent/run-qwen3-30B-A3B-multi-agent.sh
+bash examples/experimental/multi_agent/run-qwen3-30B-A3B-multi-agent.sh
 ```
 
 ## Configuration
@@ -48,7 +45,7 @@ bash examples/multi_agent/run-qwen3-30B-A3B-multi-agent.sh
 ```python
 MULTI_AGENT_CONFIGS = {
     "custom_multi_agent_function_path":
-        "examples.multi_agent.agent_system.run_agent_system",
+        "examples.experimental.multi_agent.agent_system.run_agent_system",
     "num_parallel": 5,                  # parallel agent runs per prompt
     "incorrect_reward_weight": 0.8,     # weight on agent A's reward when wrong
     "correct_reward_weight": 1.2,       # weight on agent A's reward when right
@@ -63,7 +60,7 @@ trajectories, which empirically stabilizes early training when most attempts fai
 ```bash
 ROLLOUT_ARGS=(
    --custom-generate-function-path \
-       examples.multi_agent.rollout_with_multi_agents.generate_with_multi_agents
+       examples.experimental.multi_agent.rollout_with_multi_agents.generate_with_multi_agents
    --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt --label-key label
    --apply-chat-template --rollout-shuffle
@@ -185,7 +182,7 @@ verifier becomes verbose. Tighten its system prompt or reduce its `max_tokens`.
 
 Replace `call_role` with a VLM-aware caller that includes images in messages. Miles
 supports VLM multi-turn natively — same pattern, just `multimodal_train_inputs` in the
-sample dict (see [Customization #13](../user-guide/customization.md#training)).
+sample dict (see [Customization #13](/user-guide/customization#training)).
 
 ### True asymmetric agents
 

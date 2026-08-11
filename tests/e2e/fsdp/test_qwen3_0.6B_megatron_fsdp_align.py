@@ -1,18 +1,12 @@
 import os
 
-from tests.ci.ci_register import register_amd_ci, register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=900,
-    suite="stage-c-8-gpu-h100",
-    labels=["fsdp"],
-    disabled="FSDP backend has known issues, not actively maintained",
-)
-register_amd_ci(
-    est_time=900,
-    suite="stage-c-2-gpu-mi35x",
+    suite="stage-c-2-gpu-h200",
     labels=["fsdp"],
 )
 
@@ -26,8 +20,8 @@ MEGATRON_PP_SIZE = 1
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
     U.convert_checkpoint(

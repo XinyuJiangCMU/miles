@@ -10,11 +10,12 @@ to only the MTP layers when the main model loss is zero (due to truncation).
 
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=420, suite="stage-c-4-gpu-h200", labels=["megatron"])
+register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["megatron"])
+register_rocm_ci(est_time=420, suite="stage-c-4-gpu-mi350", labels=["megatron"])
 
 MODEL_NAME = "MiMo-7B-RL"
 MODEL_TYPE = "mimo-7B-rl"
@@ -23,8 +24,8 @@ NUM_GPUS = 4
 
 def prepare():
     """Download model and convert checkpoint with MTP layers."""
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download XiaomiMiMo/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download XiaomiMiMo/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
     # Convert checkpoint with MTP layers enabled
@@ -118,6 +119,7 @@ def execute():
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
+        "--rematerialize-param-from-master-weight "
     )
 
     train_args = (

@@ -2,9 +2,6 @@
 title: MiMo
 description: Single-node GRPO + EAGLE speculative recipe with online MTP training.
 ---
-
-# MiMo 7B
-
 ## 1. Model Introduction
 
 [MiMo-7B-RL](https://huggingface.co/XiaomiMiMo/MiMo-7B-RL) is Xiaomi's dense reasoning RL model with a built-in MTP (Multi-Token Prediction) layer.
@@ -36,7 +33,8 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-20
 
 ```bash
 cd /root/miles
-source scripts/models/mimo-7B-rl.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py mimo-7B-rl)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/MiMo-7B-RL \
@@ -120,4 +118,4 @@ CPU Adam is **not** enabled.
 
 ## 6. Pairs Well With
 
-- [Speculative Decoding](../../advanced/speculative-decoding.md)
+- [Speculative Decoding](/advanced/speculative-decoding)

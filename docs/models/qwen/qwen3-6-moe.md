@@ -2,9 +2,6 @@
 title: Qwen3.6 MoE
 description: Launch recipe for Qwen3.6-35B-A3B with MTP training and EAGLE speculative rollout.
 ---
-
-# Qwen3.6 MoE
-
 ## 1. Model Introduction
 
 [Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3) is the sparse MoE branch of
@@ -50,7 +47,8 @@ hf download Qwen/Qwen3.6-35B-A3B --local-dir /root/models/Qwen3.6-35B-A3B
 
 ```bash
 cd /root/miles
-source scripts/models/qwen3.6-35B-A3B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3.6-35B-A3B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
@@ -139,7 +137,7 @@ CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --
 
 ### 5.5 Notable quirks
 
-From `scripts/models/qwen3.6-35B-A3B.sh` and `scripts/run_qwen3_6_35b_a3b_mtp.py`:
+From `scripts/models/qwen3.6-35B-A3B.py` and `scripts/run_qwen3_6_35b_a3b_mtp.py`:
 
 - `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` — Qwen3.6 reuses the Qwen3.5 spec.
 - 256 experts, `--moe-router-topk 8`, `--moe-router-score-function softmax`.
@@ -148,10 +146,10 @@ From `scripts/models/qwen3.6-35B-A3B.sh` and `scripts/run_qwen3_6_35b_a3b_mtp.py
 - `--moe-grouped-gemm`, `--moe-token-drop-policy probs`, `--moe-router-dtype fp32`, `--moe-permute-fusion`, `--moe-aux-loss-coeff 0`.
 - `--attention-output-gate`, `--rotary-base 10000000`, `--rotary-percent 0.25`, `--vocab-size 248320`.
 
-See [Backends Beyond Megatron](../../advanced/architecture-support.md) for FP32 parameter handling and how miles wires the spec.
+See [Backends Beyond Megatron](/advanced/architecture-support) for FP32 parameter handling and how miles wires the spec.
 
 ## 6. Pairs Well With
 
-- [Speculative Decoding](../../advanced/speculative-decoding.md)
-- [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md)
+- [Speculative Decoding](/advanced/speculative-decoding)
+- [Backends Beyond Megatron](/advanced/architecture-support)
+- [P2P Weight Transfer](/advanced/p2p-weight-transfer)

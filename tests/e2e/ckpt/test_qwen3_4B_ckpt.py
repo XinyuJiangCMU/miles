@@ -1,10 +1,11 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h100", labels=["ckpt"])
+register_cuda_ci(est_time=1400, suite="stage-c-8-gpu-h100", labels=["ckpt"])
+register_rocm_ci(est_time=1200, suite="stage-c-8-gpu-mi350", labels=["ckpt"])
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 
@@ -23,9 +24,9 @@ def _get_latest_checkpointed_iteration() -> int:
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.exec_command(f"rm -rf /root/models/{MODEL_NAME}_miles")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu(f"rm -rf /root/models/{MODEL_NAME}_miles")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 

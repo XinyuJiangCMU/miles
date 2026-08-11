@@ -2,9 +2,6 @@
 title: DeepSeek R1 / V3
 description: Launch recipe for DeepSeek-R1 / DeepSeek-V3 (671 B total / 37 B active) on 16 nodes × 8 H100.
 ---
-
-# DeepSeek R1 / V3
-
 ## 1. Model Introduction
 
 [DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) is a large-scale Mixture-of-Experts language model from DeepSeek, and [DeepSeek-R1](https://huggingface.co/deepseek-ai/DeepSeek-R1) is the reasoning-tuned variant built on the same architecture. Both expose the same Megatron-side definition in miles and share the launch recipe on this page.
@@ -55,7 +52,8 @@ Then convert BF16 HF → Megatron `torch_dist`. Run on **4 separate nodes** (`NO
 
 ```bash
 cd miles/
-source scripts/models/deepseek-v3.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py deepseek-v3)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM/ torchrun \
    --nproc-per-node 8 \
    --master-addr ${MASTER_ADDR} --master-port 12345 \
@@ -241,6 +239,6 @@ OPTIMIZER_ARGS=(
 
 ## 6. Pairs Well With
 
-- [PD Disaggregation](../../advanced/pd-disaggregation.md)
-- [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md)
-- [Fault Tolerance](../../advanced/fault-tolerance.md)
+- [PD Disaggregation](/advanced/pd-disaggregation)
+- [P2P Weight Transfer](/advanced/p2p-weight-transfer)
+- [Fault Tolerance](/advanced/fault-tolerance)

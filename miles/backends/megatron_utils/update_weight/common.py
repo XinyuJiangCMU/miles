@@ -3,7 +3,7 @@ import inspect
 import logging
 import re
 from argparse import Namespace
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 
 import ray
 import torch
@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 class AtomicUpdateGroup:
     key: str
     suffixes: tuple[str, ...]
+    optional: bool = False
 
 
 def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
-    model_groups = _get_model_atomic_update_groups(model_name)
+    model_groups = _get_model_atomic_update_groups(args, model_name)
     if model_groups:
         return model_groups
     return _get_q_lora_atomic_update_groups(args)
@@ -46,8 +47,12 @@ def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:
     ]
 
 
-def _get_model_atomic_update_groups(model_name) -> list[AtomicUpdateGroup]:
+def _get_model_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
     model_name = model_name.lower()
+    if "inkling" in model_name:
+        from ..megatron_to_hf.inkling import get_inkling_atomic_update_groups
+
+        return get_inkling_atomic_update_groups(args)
     if "deepseekv4" in model_name:
         from ..megatron_to_hf.deepseekv4 import get_deepseek_v4_atomic_update_groups
 
@@ -103,7 +108,7 @@ def get_named_update_units(param_names: Sequence[str], atomic_update_groups) -> 
 
     for group in atomic_update_groups:
         assert (
-            group.key in matched_group_keys
+            group.optional or group.key in matched_group_keys
         ), f"Atomic update group {group.key} references no params matching suffixes {group.suffixes}"
 
     for (prefix, key), names in pending_groups.items():
@@ -138,10 +143,23 @@ def _gather_with_stride(
     return torch.cat(interleaved, dim=partition_dim)
 
 
+def is_routed_expert_param(name: str) -> bool:
+    """Whether a Megatron param name belongs to the routed (expert-parallel) experts.
+
+    Routed experts live under ".experts.", but shared experts may nest an inner
+    ModuleList (e.g. Inkling's "mlp.shared_experts.experts.N.") whose params are
+    regular-TP sharded and EP-replicated, so they must not match.
+    """
+    return ".experts." in name and ".shared_experts." not in name
+
+
 def _is_unmarked_grouped_expert_weight(name: str, param: torch.nn.Parameter) -> bool:
-    """Detect expert-TP shards whose TE parameters lack TP metadata."""
+    """TEGroupedLinear never marks its per-expert weight0..weightN, so Megatron fills in
+    the defaults (tensor_model_parallel=False, partition_dim=-1) and the tensor claims to
+    be unsharded. It is expert-TP sharded whenever etp > 1, so the gather must still run.
+    """
     return (
-        ".experts." in name
+        is_routed_expert_param(name)
         and ("linear_fc1.weight" in name or "linear_fc2.weight" in name)
         and not param.tensor_model_parallel
         and get_parallel_state().etp.size > 1
@@ -171,7 +189,8 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
 def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> torch.Tensor:
     """
     All-gather TP-sharded param to full tensor. expert_bias→param, non-TP/duplicated→param.data.
-    Uses expert-TP for ".experts.", else regular-TP. Handles strided partitioning via partition_stride.
+    Uses expert-TP for routed ".experts." (but NOT ".shared_experts." — those are split on the
+    REGULAR TP group like attention), else regular-TP. Handles strided partitioning via partition_stride.
     """
     if "expert_bias" in name:
         return param
@@ -182,12 +201,15 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
     if not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(name, param):
         return param.data
 
-    if ".experts." in name:
+    if is_routed_expert_param(name):
         tp_size = get_parallel_state().etp.size
         tp_group = get_parallel_state().etp.group
     else:
         tp_size = get_parallel_state().tp.size
         tp_group = get_parallel_state().tp.group
+
+    if tp_size <= 1:
+        return param.data
 
     param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
     dist.all_gather(param_partitions, param.data, group=tp_group)
@@ -224,12 +246,17 @@ def all_gather_params_async(
             handles.append(None)
         else:
             # Start async all_gather
-            if ".experts." in info.name:
+            if is_routed_expert_param(info.name):
                 tp_size = get_parallel_state().etp.size
                 tp_group = get_parallel_state().etp.group
             else:
                 tp_size = get_parallel_state().tp.size
                 tp_group = get_parallel_state().tp.group
+
+            if tp_size <= 1:
+                gather_tasks.append((info, param.data, None, None, None, None))
+                handles.append(None)
+                continue
 
             param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
             handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
@@ -263,26 +290,10 @@ def named_params_and_buffers(
     args: Namespace,
     model: Sequence[torch.nn.Module],
     convert_to_global_name: bool = True,
-    translate_gpu_to_cpu: bool = False,
 ) -> Iterator[tuple[str, torch.Tensor]]:
     if convert_to_global_name:
-        ans = _named_params_and_buffers_global(args, model)
-    else:
-        ans = _named_params_and_buffers_vanilla(model)
-
-    if translate_gpu_to_cpu:
-        ans = ((name, _maybe_get_cpu_backup(tensor)) for name, tensor in ans)
-
-    return ans
-
-
-def _maybe_get_cpu_backup(x: torch.Tensor):
-    from torch_memory_saver import torch_memory_saver
-
-    if (cpu_tensor := torch_memory_saver.get_cpu_backup(x)) is not None:
-        return cpu_tensor
-
-    return x
+        return _named_params_and_buffers_global(args, model)
+    return _named_params_and_buffers_vanilla(model)
 
 
 def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
@@ -292,6 +303,8 @@ def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Itera
             return f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}"
 
         for name, param in model_module.named_parameters():
+            if getattr(param, "_is_witness_param", False):
+                continue
             yield _compute_fqn(name), param
 
         for name, buffer in model_module.named_buffers():
@@ -322,6 +335,8 @@ def _named_params_and_buffers_global(
         else:
             layer_offset = get_transformer_layer_offset(model_module.config)
         for name, param in model_module.named_parameters():
+            if getattr(param, "_is_witness_param", False):
+                continue
             # for model without ddp wrap
             if not name.startswith("module.module."):
                 name = "module." + name
@@ -385,49 +400,54 @@ def collect_named_tensors_for_weight_transfer(
     args: Namespace,
     model: Sequence[torch.nn.Module],
     convert_to_global_name: bool = True,
-    translate_gpu_to_cpu: bool = False,
     is_expert: bool | None = False,
 ) -> Iterator[tuple[str, torch.Tensor]]:
 
-    for name, tensor in named_params_and_buffers(
-        args,
-        model,
-        convert_to_global_name,
-        translate_gpu_to_cpu,
-    ):
-        if is_expert is None or is_expert == (".experts." in name):
+    for name, tensor in named_params_and_buffers(args, model, convert_to_global_name):
+        if is_expert is None or is_expert == is_routed_expert_param(name):
             yield name, tensor
 
 
-def post_process_weights(
-    rollout_engines: Sequence[ActorHandle],
-    restore_weights_before_load: bool = False,
-    post_process_quantization: bool = False,
-    post_load_weights: bool = False,
-):
-    """
-    Trigger post-process on all rollout engines,
-    including:
-        - int4/fp4 quantization
-        - post_load_weights (should be enabled when using p2p weights updating)
-    """
-    ray.get(
-        [
-            engine.post_process_weights.remote(
-                restore_weights_before_load=restore_weights_before_load,
-                post_process_quantization=post_process_quantization,
-                post_load_weights=post_load_weights,
-            )
-            for engine in rollout_engines
-        ]
-    )
+def begin_weight_update(rollout_engines: Sequence[ActorHandle], selector: str = "all"):
+    """Open a weight-update session on the selected rollout engines (restore packed weights)."""
+    ray.get([engine.begin_weight_update.remote(selector=selector) for engine in rollout_engines])
 
 
-def begin_weight_update(rollout_engines: Sequence[ActorHandle]):
-    """Open a weight-update session on all rollout engines."""
-    ray.get([engine.begin_weight_update.remote() for engine in rollout_engines])
+def weight_update_selector(args) -> str:
+    """Exclude the draft only when the trainer provably has no MTP block to send it."""
+    if (
+        getattr(args, "sglang_speculative_algorithm", None)
+        and not getattr(args, "mtp_num_layers", None)
+        and getattr(args, "megatron_to_hf_mode", "raw") != "bridge"
+    ):
+        return "target"
+    return "all"
 
 
 def end_weight_update(rollout_engines: Sequence[ActorHandle]):
-    """Close the active weight-update session on all rollout engines."""
+    """Close the weight-update session (post-load + quant post-process on the full model)."""
     ray.get([engine.end_weight_update.remote() for engine in rollout_engines])
+
+
+def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:
+    """Validate return values from rollout engine weight-sync RPCs.
+
+    Raises RuntimeError if any engine reports failure, preventing silent
+    failures when SGLang versions are incompatible.
+    """
+    sync_type = "LoRA" if is_lora else "Base model"
+    for result in results:
+        if isinstance(result, Mapping):
+            success = result.get("success")
+            error_msg = result.get("error_message") or result.get("error") or "unknown error"
+        elif hasattr(result, "success"):
+            success = result.success
+            error_msg = getattr(result, "error_message", "unknown error")
+        else:
+            continue
+
+        if success is False:
+            raise RuntimeError(
+                f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
+                f"Check SGLang version compatibility."
+            )
