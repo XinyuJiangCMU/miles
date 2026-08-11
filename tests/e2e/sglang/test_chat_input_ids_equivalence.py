@@ -110,4 +110,4 @@ def _post_chat(base_url: str, messages: list[dict]) -> dict:
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    raise SystemExit(pytest.main([__file__, "-v"]))
