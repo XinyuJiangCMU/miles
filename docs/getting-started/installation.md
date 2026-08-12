@@ -39,9 +39,7 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
 
 </Tabs>
 
-The AMD images are rebuilt nightly. The tags above always resolve to the newest build;
-append a date to pin a specific one, for example
-`rocm/sgl-dev:miles-rocm720-mi35x-20260811`.
+The AMD images are rebuilt nightly. The tags above always resolve to the newest build; append a date to pin a specific one, for example `rocm/sgl-dev:miles-rocm720-mi35x-20260811`.
 
 The image ships with:
 
