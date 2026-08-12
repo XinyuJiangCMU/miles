@@ -1,7 +1,8 @@
 import os
 
 from scripts.run_inkling import _MODEL_REGISTRY, ScriptArgs, _train
-from tests.ci.ci_register import register_cuda_ci
+from sglang.srt.utils import is_hip
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
@@ -16,6 +17,11 @@ register_cuda_ci(
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
 )
+register_rocm_ci(
+    est_time=1800,
+    suite="stage-c-4-gpu-mi350",
+    labels=["megatron", "model-scripts", "lora", "amd"],
+)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -24,6 +30,8 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 _MODEL_ORG = "CharyZeng"
+
+_PLATFORM_EXTRA_ARGS = "--sglang-attention-backend triton " if is_hip() else ""
 
 
 def _args() -> ScriptArgs:
@@ -37,7 +45,8 @@ def _args() -> ScriptArgs:
         num_rollout=2,
         rollout_max_response_len=512,
         sglang_context_length=1024,
-        extra_args=(
+        extra_args=_PLATFORM_EXTRA_ARGS
+        + (
             "--ci-test "
             "--ci-disable-kl-checker "
             # frozen towers and the engine-derived adapter buffers never match the snapshot
