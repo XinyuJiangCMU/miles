@@ -22,22 +22,41 @@ versions of SGLang, Megatron-LM, and a few CUDA kernels.
     ```
 
   </Tab>
-  <Tab title="AMD MI300X / MI350X">
+  <Tab title="AMD MI350X / MI355X">
 
     ```bash
-    docker pull rlsys/miles:MI350-355-latest    # or MI300-latest
+    docker pull rocm/sgl-dev:miles-rocm720-mi35x
 
     docker run --rm \
       --device /dev/dri --device /dev/kfd \
       --group-add video --ipc=host --shm-size=32g \
       --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
       --privileged \
-      -it rlsys/miles:MI350-355-latest /bin/bash
+      -it rocm/sgl-dev:miles-rocm720-mi35x /bin/bash
+    ```
+
+  </Tab>
+  <Tab title="AMD MI300X">
+
+    ```bash
+    docker pull rocm/sgl-dev:miles-rocm700-mi30x
+
+    docker run --rm \
+      --device /dev/dri --device /dev/kfd \
+      --group-add video --ipc=host --shm-size=32g \
+      --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
+      --privileged \
+      -it rocm/sgl-dev:miles-rocm700-mi30x /bin/bash
     ```
 
   </Tab>
 
 </Tabs>
+
+The AMD images are rebuilt nightly. The tags above always resolve to the newest
+build; append a date to pin a specific one, for example
+`rocm/sgl-dev:miles-rocm720-mi35x-20260811`. A ROCm 7.0 build for MI350X / MI355X
+is published as `rocm/sgl-dev:miles-rocm700-mi35x`.
 
 The image ships with:
 
