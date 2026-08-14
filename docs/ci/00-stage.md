@@ -6,7 +6,7 @@ A *stage* is one CI job in a Miles CI workflow. A *suite* is the `suite=` value 
 
 ## Suite → stage mapping
 
-The canonical suite list is `CI_SUITES` in `tests/ci/run_suite.py`, grouped by hardware backend (CPU / CUDA / ROCm). Cadence does not change this inventory: regular, nightly, and weekly runs use the same stages. Every CPU and CUDA entry has one matching job in `pr-test.yml`; `stage-c-4-gpu-mi350` has its matching job in `pr-test-rocm.yml`; the 2-GPU and 8-GPU MI350 suites are owned by the external nightly described below. A test picks its stage purely by `suite=`; the stage job runs `run_suite.py --suite <name>`, which collects exactly the tests carrying that suite.
+The canonical suite list is `CI_SUITES` in `tests/ci/run_suite.py`, grouped by hardware backend (CPU / CUDA / ROCm). Cadence does not change this inventory: regular, nightly, and weekly runs use the same stages. Every CPU and CUDA entry has one matching job in `pr-test.yml`; `stage-c-4-gpu-mi350` has its matching job in `pr-test-rocm.yml`; the `nightly-` prefixed MI350 suites are owned by the external nightly described below. A test picks its stage purely by `suite=`; the stage job runs `run_suite.py --suite <name>`, which collects exactly the tests carrying that suite.
 
 The mapping is kept in sync by hand on both sides:
 - A `suite=` with no matching job never runs.
@@ -67,7 +67,7 @@ Weekly runs keep the same shards but set each GPU matrix's `max-parallel` to one
 
 `pr-test-rocm.yml` has `pull_request`, exact nightly and weekly crons, and `workflow_dispatch` entry points. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi350` through `_run-ci-rocm.yml` on two 4-GPU MI350 runners, resolves `rocm/sgl-dev:<tag>` (defaulting to the undated `miles-rocm720-mi35x` tag each nightly image build overwrites), and splits tests into two `est_time`-balanced shards. Weekly limits that matrix to one runner at a time. It runs no CPU tests. SGLang and Megatron-LM come from the image, so manual dispatch exposes no dependency-ref inputs.
 
-Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi350", ...)` run; CUDA registrations are not inherited. PR, nightly, and weekly runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset of the suite; the remaining MI350 registrations carry only topic labels and are picked up by manual dispatch or the external nightly. Other `run-ci-*` labels can select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly selects all enabled registrations. Manual dispatch adds `--match-all-labels` and runs the full regular suite.
+Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi350", ...)` run; the `nightly-` prefixed suites are not inherited here either. CUDA registrations are not inherited. PR, nightly, and weekly runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset of the suite; the remaining MI350 registrations carry only topic labels and are picked up by manual dispatch or the external nightly. Other `run-ci-*` labels can select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly selects all enabled registrations. Manual dispatch adds `--match-all-labels` and runs the full regular suite.
 
 Fork PRs use GitHub's standard `pull_request` protections: checkout tests the merge commit, repository secrets are withheld, and held runs follow the shared maintainer approval flow described in [`01-label.md`](01-label.md).
 
@@ -75,7 +75,7 @@ An 8-GPU CUDA case needs a separate 4-GPU `test_amd_<name>.py` variant rather th
 
 Both runner containers can see all eight host GPUs through `/dev/dri`. Each runner restricts itself to four GPUs with `HIP_VISIBLE_DEVICES`, which `_run-ci-rocm.yml` forwards into the container.
 
-**External MI350 nightly.** Miles declares `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` in `CI_SUITES`, but schedules only `stage-c-4-gpu-mi350` in its own workflows (`pr-test-rocm.yml`). All three are also run by the external [`sgl-project/sglang` ROCm 7.2 nightly workflow](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm720.yml).
+**External MI350 nightly.** Miles declares `nightly-stage-c-2-gpu-mi350`, `nightly-stage-c-4-gpu-mi350`, and `nightly-stage-c-8-gpu-mi350` in `CI_SUITES` for the external nightly, and keeps the unprefixed `stage-c-4-gpu-mi350` for its own `pr-test-rocm.yml`. The three prefixed suites are run by the external [`sgl-project/sglang` ROCm 7.2 nightly workflow](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm720.yml).
 
 ## Assumptions
 
