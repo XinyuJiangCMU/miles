@@ -10,7 +10,7 @@ register_cuda_ci(
     labels=["long"],
 )
 register_rocm_ci(
-    est_time=3000,
+    est_time=3900,
     suite="stage-c-2-gpu-mi350",
     labels=["long"],
 )

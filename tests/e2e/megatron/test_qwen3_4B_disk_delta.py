@@ -13,7 +13,7 @@ register_cuda_ci(
     labels=["megatron", "weight-update"],
 )
 register_rocm_ci(
-    est_time=600,
+    est_time=500,
     suite="stage-c-8-gpu-mi350",
     labels=["megatron", "weight-update"],
 )

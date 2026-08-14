@@ -32,7 +32,7 @@ from tests.e2e.conftest_dumper import (
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=1100, suite="stage-c-8-gpu-h100", labels=["short"])
-register_rocm_ci(est_time=1100, suite="stage-c-8-gpu-mi350", labels=["short"])
+register_rocm_ci(est_time=1800, suite="stage-c-8-gpu-mi350", labels=["short"])
 
 
 app: typer.Typer = typer.Typer()

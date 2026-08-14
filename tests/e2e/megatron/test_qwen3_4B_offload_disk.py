@@ -26,7 +26,7 @@ register_cuda_ci(
     labels=["megatron"],
 )
 register_rocm_ci(
-    est_time=600,
+    est_time=300,
     suite="stage-c-4-gpu-mi350",
     labels=["megatron"],
 )

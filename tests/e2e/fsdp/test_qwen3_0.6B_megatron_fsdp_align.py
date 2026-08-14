@@ -10,7 +10,7 @@ register_cuda_ci(
     labels=["fsdp"],
 )
 register_rocm_ci(
-    est_time=900,
+    est_time=800,
     suite="stage-c-2-gpu-mi350",
     labels=["fsdp"],
 )
