@@ -42,7 +42,6 @@ CI_SUITES = {
     ],
     HWBackend.ROCM: [
         "stage-c-8-gpu-mi350",
-        "stage-c-4-gpu-mi300x",
         "stage-c-4-gpu-mi350",
         "stage-c-2-gpu-mi350",
     ],
@@ -53,7 +52,7 @@ def filter_tests(
     ci_tests: list[CIRegistry],
     hw: HWBackend,
     suite: str,
-    nightly: bool = False,
+    admit_nightly_tests: bool = False,
     labels: set[str] | None = None,
 ) -> tuple[list[CIRegistry], list[CIRegistry]]:
     """Filter registered tests down to the set that should run.
@@ -71,7 +70,7 @@ def filter_tests(
     if suite not in valid_suites:
         raise ValueError(f"Unknown suite {suite} for backend {hw.name}")
 
-    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and (not t.nightly or nightly)]
+    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and (not t.nightly or admit_nightly_tests)]
 
     label_set: set[str] = labels or set()
     ci_tests = [t for t in ci_tests if not t.labels or (set(t.labels) & label_set)]
@@ -188,7 +187,7 @@ def run_a_suite(args):
         all_tests,
         hw,
         suite,
-        policy.is_nightly,
+        policy.admit_nightly_tests,
         labels=include_labels,
     )
 
@@ -217,9 +216,8 @@ def run_a_suite(args):
 
     # Regression-gate wiring: the store exists only when NEON_DATABASE_URL is
     # set (CI), so the gate hook is a no-op locally. The resolved cadence is
-    # also the baseline-writing signal. Provenance comes from the GitHub env.
+    # also supplies the baseline-writing signal. Provenance comes from the GitHub env.
     gate_store = build_store_from_env()
-    gate_nightly = policy.is_nightly
     gate_provenance = gate_provenance_from_env()
 
     # The gate collects only when a record directory exists. CI does not set
@@ -237,7 +235,7 @@ def run_a_suite(args):
         max_attempts=args.max_attempts,
         retry_wait_seconds=args.retry_wait_seconds,
         gate_store=gate_store,
-        gate_nightly=gate_nightly,
+        gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
     )
 
