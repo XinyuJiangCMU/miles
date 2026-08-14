@@ -1,7 +1,8 @@
 import os
 
 from scripts.run_qwen3_5_35b_a3b_lora import ScriptArgs, _prepare_download, _train
-from tests.ci.ci_register import register_cuda_ci
+from sglang.srt.utils import is_hip
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
@@ -13,6 +14,11 @@ import miles.utils.external_utils.command_utils as U
 
 
 register_cuda_ci(est_time=1300, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts", "lora"])
+register_rocm_ci(est_time=1300, suite="stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
+
+_PLATFORM_EXTRA_ARGS = (
+    "--sglang-attention-backend triton --sglang-disable-shared-experts-fusion " if is_hip() else ""
+)
 
 # (name, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [
@@ -30,7 +36,8 @@ def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
         experts_shared_outer_loras=shared_outer,
         enable_wandb=False,
         extra_args=(
-            "--ci-test --ci-disable-logprobs-checker "
+            _PLATFORM_EXTRA_ARGS
+            + "--ci-test --ci-disable-logprobs-checker "
             + ("" if virtual_experts else "--no-sglang-lora-use-virtual-experts ")
         ),
     )
