@@ -1,6 +1,5 @@
 import os
 
-from sglang.srt.utils import is_hip
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
@@ -24,7 +23,7 @@ _CONFIGS = [
     ("per-expert + no-virtual-experts", False, False),
 ]
 
-_PLATFORM_EXTRA_ARGS = "--sglang-attention-backend triton " if is_hip() else ""
+_PLATFORM_EXTRA_ARGS = "--sglang-attention-backend triton " if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" else ""
 
 
 def prepare():

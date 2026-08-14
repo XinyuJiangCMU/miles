@@ -1,7 +1,6 @@
 import os
 
 from scripts.run_qwen3_5_35b_a3b_lora import ScriptArgs, _prepare_download, _train
-from sglang.srt.utils import is_hip
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
@@ -17,7 +16,9 @@ register_cuda_ci(est_time=1300, suite="stage-c-8-gpu-h100", labels=["megatron", 
 register_rocm_ci(est_time=1300, suite="stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 _PLATFORM_EXTRA_ARGS = (
-    "--sglang-attention-backend triton --sglang-disable-shared-experts-fusion " if is_hip() else ""
+    "--sglang-attention-backend triton --sglang-disable-shared-experts-fusion "
+    if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm"
+    else ""
 )
 
 # (name, experts_shared_outer_loras, virtual_experts_serving)

@@ -1,7 +1,6 @@
 import os
 
 from scripts.run_inkling import _MODEL_REGISTRY, ScriptArgs, _train
-from sglang.srt.utils import is_hip
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
@@ -31,7 +30,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 _MODEL_ORG = "CharyZeng"
 
-_PLATFORM_EXTRA_ARGS = "--sglang-attention-backend triton " if is_hip() else ""
+_PLATFORM_EXTRA_ARGS = "--sglang-attention-backend triton " if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" else ""
 
 
 def _args() -> ScriptArgs:
