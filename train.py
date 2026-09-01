@@ -127,11 +127,17 @@ async def train(args):
                 os.remove(args.save_trigger_sentinel)
 
         await offload_train()
-        if args.offload_rollout:
+        if args.offload_rollout and "weight" in args.offload_rollout_level:
             await rollout_manager.onload_weights.remote()
         await actor_model.update_weights(rollout_id=rollout_id)
         if args.offload_rollout:
-            await rollout_manager.onload_kv.remote()
+            # Build this the same way the offload set above is built. onload_kv carries the
+            # cuda graph, which offload always pauses, so gating on kv_cache alone would leave
+            # it paused for the rest of the run under --offload-rollout-level weight.
+            onload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+            if "kv_cache" in args.offload_rollout_level:
+                onload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+            await rollout_manager.onload.remote(tags=onload_tags)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await rollout_manager.eval.remote(rollout_id)
