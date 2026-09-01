@@ -207,6 +207,25 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 RUN rm -rf /tmp/wheels
 
+# Collapse duplicate wheel-SDK libs (devel vs core/libraries) that can be loaded twice (ROCm/TheRock#7818).
+RUN set -eux; \
+    SP="$(python3 -c 'import site; print(site.getsitepackages()[0])')"; \
+    if [ -d "$SP/_rocm_sdk_devel/lib" ]; then \
+      for f in "$SP"/_rocm_sdk_devel/lib/*.so*; do \
+        { [ -f "$f" ] && [ ! -L "$f" ]; } || continue; \
+        for t in _rocm_sdk_core _rocm_sdk_libraries; do \
+          c="$SP/$t/lib/$(basename "$f")"; \
+          if [ -f "$c" ] && cmp -s "$f" "$c"; then \
+            ln -srf "$c" "$f"; \
+            echo "[dedup] $(basename "$f") -> $t"; \
+            break; \
+          fi; \
+        done; \
+      done; \
+    else \
+      echo "[dedup] no wheel-SDK trees, skipping"; \
+    fi
+
 # ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
