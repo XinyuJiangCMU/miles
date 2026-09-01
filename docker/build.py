@@ -50,29 +50,6 @@ VARIANTS = {
             "WHEELS_TAG_X86": "cu129-x86_64",
         },
     },
-    "rocm700-mi35x": {
-        "image": "rocm/sgl-dev",
-        "tag_postfix": "-rocm700-mi35x",
-        "tag_prefix": "miles",
-        "dockerfile": "docker/Dockerfile.rocm",
-        "build_args": {
-            "GPU_ARCH": "gfx950",
-            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
-            "SGLANG_IMAGE_TAG": "v0.5.14-rocm700-mi35x-20260627",
-            "SGLANG_USE_ROCM700A": "1",
-        },
-    },
-    "rocm700-mi30x": {
-        "image": "rocm/sgl-dev",
-        "tag_postfix": "-rocm700-mi30x",
-        "tag_prefix": "miles",
-        "dockerfile": "docker/Dockerfile.rocm",
-        "build_args": {
-            "GPU_ARCH": "gfx942",
-            "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi30x",
-            "SGLANG_USE_ROCM700A": "1",
-        },
-    },
     "rocm720-mi35x": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm720-mi35x",
@@ -83,6 +60,37 @@ VARIANTS = {
             "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
             "SGLANG_IMAGE_TAG": "v0.5.16-rocm720-mi35x-20260730",
             "APPLY_ROCR_VMMFIX": "1",
+            "TE_USE_WHEEL": "1",
+        },
+    },
+    # The rocm724/rocm10 bases are Python 3.12, so the cp310 wheels in the
+    # rocm720 shelf do not fit. rocm10 has its own cp312 shelf
+    # (rocm10-gfx950-v0.5.18); rocm724 is blocked on one (its flash-attn wheel
+    # install will fail until then). APPLY_ROCR_VMMFIX: 7.2.4 still needs the
+    # fix but the .so must be rebuilt for its soname first; ROCm 10 has the fix
+    # upstream.
+    "rocm724-mi35x": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm724-mi35x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx950",
+            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
+            "SGLANG_IMAGE_TAG": "v0.5.18-rocm724-mi35x-20260831",
+            "TE_USE_WHEEL": "0",
+        },
+    },
+    "rocm10-mi35x": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm10-mi35x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx950",
+            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
+            "SGLANG_IMAGE_TAG": "v0.5.18-rocm10-mi35x-20260831",
+            "WHEELS_TAG_ROCM": "rocm10-gfx950-v0.5.18",
             "TE_USE_WHEEL": "1",
         },
     },
@@ -176,9 +184,9 @@ class Variant(str, Enum):
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
     cu12_x86 = "cu12-x86"
-    rocm700_mi35x = "rocm700-mi35x"
-    rocm700_mi30x = "rocm700-mi30x"
     rocm720_mi35x = "rocm720-mi35x"
+    rocm724_mi35x = "rocm724-mi35x"
+    rocm10_mi35x = "rocm10-mi35x"
 
 
 class ImageTag(str, Enum):

@@ -1,0 +1,78 @@
+{
+  "_comment": "Live manifest for the ROCm variant bring-up. One entry per variant; frozen copies are produced per dated tag at publish time.",
+  "rocm724-mi35x": {
+    "base-image": {
+      "tag": "rocm/sgl-dev:v0.5.18-rocm724-mi35x-20260831",
+      "digest": "sha256:6b70b273917e51bf5f511993bbb7ec5fc4c3e2c64263f4b2e3b4a08b808d5b87"
+    },
+    "source": {
+      "_note": "sglang/megatron/miles pins same as rocm10-mi35x below",
+      "transformer-engine": {
+        "repo": "ROCm/TransformerEngine",
+        "ref": "v2.8_rocm (tag)",
+        "commit": "a365f2deb555e681bf5b259e344b2bd1fbb4f87c",
+        "delivery": "source build (TE_USE_WHEEL=0) until a 7.2.4 cp312 shelf exists; note this is TE 2.8, older than the 2.17 the rocm720/rocm10 tracks run"
+      }
+    },
+    "notes": [
+      "VMM fake-release probe on this base: BUGGY (2026-09-01, vmm_pause_test) -> production use needs the vmmfix .so rebuilt against 7.2.4 (soname .1.18.70204); APPLY_ROCR_VMMFIX stays 0 until then",
+      "IPC-export leak probe: dmabuf path leaks 256MB/iter, HSA_ENABLE_IPC_MODE_LEGACY=1 still required and still effective"
+    ]
+  },
+  "rocm10-mi35x": {
+    "base-image": {
+      "tag": "rocm/sgl-dev:v0.5.18-rocm10-mi35x-20260831",
+      "digest": "sha256:08f82ec03733ba397853e43c3f2208f82f31fd7b5dde0f428ff76963453c0094"
+    },
+    "source": {
+      "sglang": {
+        "repo": "sgl-project/sglang",
+        "ref": "sglang-miles",
+        "commit": "2f51d3764b7581b42190d9707b897f7b164ead48",
+        "delivery": "checkout inside base image /sgl-workspace/sglang, pinned via --build-arg SGLANG_COMMIT"
+      },
+      "megatron": {
+        "repo": "radixark/Megatron-LM",
+        "ref": "miles-main",
+        "commit": "c160f0717e40f052de740026cf62739340e7b970",
+        "delivery": "git clone -b miles-main at build time; Dockerfile has no commit arg, SHA recorded here is the resolved HEAD at manifest time (drift risk until a MEGATRON_COMMIT arg exists)"
+      },
+      "transformer-engine": {
+        "repo": "JessicaJiang-123/TransformerEngine",
+        "ref": "miles-te-0814 (= XinyuJiangCMU miles-dev after the 2026-09-01 unification)",
+        "commit": "58109c88cb277d7f7763d239b7cbadfbe77ff241",
+        "delivery": "wheel transformer_engine-2.17.0-cp312 from the rocm10-gfx950-v0.5.18 release (TE_USE_WHEEL=1)"
+      },
+      "miles": {
+        "repo": "radixark/miles",
+        "ref": "main",
+        "commit": "542213b96",
+        "delivery": "git clone at build time, pinned via --build-arg MILES_COMMIT"
+      }
+    },
+    "wheels": {
+      "release": "XinyuJiangCMU/miles-wheels-rocm@rocm10-gfx950-v0.5.18",
+      "assets": {
+        "transformer_engine-2.17.0-cp312-cp312-linux_x86_64.whl": {
+          "sha256": "848890331844669eb60de77894bbf1c979c5ea3118d9c74289156ccb03ac2dce",
+          "source": "JessicaJiang-123/TransformerEngine@58109c88 built in the base container (build_te_wheel.py)"
+        },
+        "flash_attn-2.8.3-cp312-cp312-linux_x86_64.whl": {
+          "sha256": "5c915f96fefd583299d1056bdbd98fe5b16ff9b499b057a708ee028f20e92933",
+          "source": "PyPI flash-attn==2.8.3 sdist, GPU_ARCHS=gfx950 BUILD_TARGET=rocm, built in the base container"
+        },
+        "sglang_router-0.3.2-cp38-abi3-manylinux_2_34_x86_64.whl": {
+          "sha256": "808df7d89b77e98cbf18ac1251db4c233e892f45a5c7b0d4dc92f9b21a25b59e",
+          "source": "byte-identical copy from rocm720-gfx950-v0.5.16 (stable-ABI wheel)"
+        },
+        "sgl-model-gateway-linux-x86_64.tar.gz": {
+          "sha256": "7174010b64ac41620220f3a6ff07c2f3bdcfa7effc468efbe9c8302c71e91afe",
+          "source": "byte-identical copy from rocm720-gfx950-v0.5.16 (arch binary)"
+        }
+      },
+      "skipped": [
+        "vmmfix .so (ROCm 10 runtime has both leak fixes upstream; probed 2026-09-01)"
+      ]
+    }
+  }
+}
