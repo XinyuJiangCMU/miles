@@ -74,6 +74,7 @@ VARIANTS = {
             "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
             "SGLANG_IMAGE_TAG": "v0.5.18-rocm10-mi35x-20260831",
             "WHEELS_TAG_ROCM": "rocm10-gfx950-v0.5.18",
+            "APEX_USE_PREBUILT": "1",
             "TE_USE_WHEEL": "1",
         },
     },

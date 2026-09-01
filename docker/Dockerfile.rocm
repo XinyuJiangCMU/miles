@@ -29,6 +29,7 @@ ARG GPU_ARCH=gfx950
 ARG APPLY_ROCR_VMMFIX=0
 ARG WHEELS_REPO=XinyuJiangCMU/miles-wheels-rocm
 ARG WHEELS_TAG_ROCM=rocm720-gfx950-v0.5.16
+ARG APEX_USE_PREBUILT=0
 ARG MAX_JOBS=128
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
@@ -98,6 +99,15 @@ RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_to
       cd /root/TransformerEngine && NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v; \
     fi
 RUN pip install /tmp/wheels/flash_attn-*.whl
+
+# Prebuilt ROCm/apex@40608ba wheel from the shelf; Megatron needs its fused ops.
+RUN if [ "${APEX_USE_PREBUILT}" = "1" ]; then \
+      pip install cxxfilt==0.3.0 py-cpuinfo==9.0.0 && \
+      pip install --no-deps /tmp/wheels/apex-*.whl && \
+      python3 -c "import fused_weight_gradient_mlp_cuda"; \
+    else \
+      echo "[apex] prebuilt wheel skipped (APEX_USE_PREBUILT=${APEX_USE_PREBUILT})"; \
+    fi
 
 # make install lays down mooncake's native modules but not its pure Python files.
 RUN pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==${MOONCAKE_VERSION}" && \
