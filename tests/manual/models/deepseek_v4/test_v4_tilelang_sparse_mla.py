@@ -10,7 +10,7 @@ Diff metrics follow the dumper comparator convention:
   - abs_diff percentiles (p50, p95, p99)
 
 Test matrix covers:
-  - V4 real configs: H=64 (n_local_heads on single TP), D=512, various topk
+  - V4 real configs: H=64 (TP=1) and H=16 (TP=4), D=512, various topk
   - Smaller configs for faster testing: H=8, H=16
   - Different sequence lengths: 128, 256, 512, 1024, 2048
   - Different batch sizes: 1, 2
@@ -32,7 +32,7 @@ except ImportError:
 
 if tilelang is not None:
     from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
-    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_bwd import _use_gfx950_tuning
+    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_bwd import _get_gfx950_tuning_profile
     from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 else:
     sparse_attn_tilelang = None
@@ -271,7 +271,12 @@ BACKWARD_CONFIGS = [
     (2, 128, 8, 512, 160, 64),
     (1, 256, 64, 512, 320, 128),
     (1, 512, 8, 512, 640, 256),
+    (1, 512, 16, 512, 512, 128),
+    (1, 512, 16, 512, 515, 160),
+    (1, 512, 16, 512, 640, 256),
     (1, 512, 64, 512, 640, 256),
+    (1, 1024, 16, 512, 1032, 160),
+    (1, 1024, 16, 512, 1280, 384),
     (1, 1024, 64, 512, 1280, 512),
     (1, 2048, 64, 512, 2560, 512),
 ]
@@ -424,19 +429,25 @@ def test_diff_summary():
 
 @requires_tilelang()
 @pytest.mark.parametrize(
-    "hip,arch,shape,kv_length,topk,expected",
+    "hip,arch,shape,kv_length,topk,expected_profile",
     [
-        ("7.2", "gfx950:sramecc+:xnack-", (1, 512, 64, 512), 640, 256, True),
-        ("7.2", "gfx950", (1, 1024, 64, 512), 1280, 512, True),
-        ("7.2", "gfx950", (1, 2048, 64, 512), 2560, 512, True),
-        ("7.2", "gfx942", (1, 512, 64, 512), 640, 256, False),
-        (None, "", (1, 512, 64, 512), 640, 256, False),
-        ("7.2", "gfx950", (2, 512, 64, 512), 640, 256, False),
-        ("7.2", "gfx950", (1, 512, 16, 512), 640, 256, False),
-        ("7.2", "gfx950", (1, 512, 64, 512), 640, 128, False),
+        ("7.2", "gfx950:sramecc+:xnack-", (1, 512, 16, 512), 512, 128, "h16"),
+        ("7.2", "gfx950", (1, 512, 16, 512), 515, 160, "h16"),
+        ("7.2", "gfx950", (1, 512, 16, 512), 640, 256, "h16"),
+        ("7.2", "gfx950", (1, 1024, 16, 512), 1032, 160, "h16"),
+        ("7.2", "gfx950", (1, 1024, 16, 512), 1280, 384, "h16"),
+        ("7.2", "gfx950:sramecc+:xnack-", (1, 512, 64, 512), 640, 256, "h64"),
+        ("7.2", "gfx950", (1, 1024, 64, 512), 1280, 512, "h64"),
+        ("7.2", "gfx950", (1, 2048, 64, 512), 2560, 512, "h64"),
+        ("7.2", "gfx942", (1, 512, 16, 512), 640, 256, None),
+        (None, "", (1, 512, 16, 512), 640, 256, None),
+        ("7.2", "gfx950", (2, 512, 16, 512), 640, 256, None),
+        ("7.2", "gfx950", (1, 512, 8, 512), 640, 256, None),
+        ("7.2", "gfx950", (1, 512, 16, 256), 640, 256, None),
+        ("7.2", "gfx950", (1, 512, 16, 512), 640, 128, None),
     ],
 )
-def test_gfx950_backward_dispatch(monkeypatch, hip, arch, shape, kv_length, topk, expected):
+def test_gfx950_backward_dispatch(monkeypatch, hip, arch, shape, kv_length, topk, expected_profile):
     monkeypatch.setattr(torch.version, "hip", hip)
     queried_devices = []
 
@@ -447,9 +458,8 @@ def test_gfx950_backward_dispatch(monkeypatch, hip, arch, shape, kv_length, topk
     monkeypatch.setattr(torch.cuda, "get_device_properties", properties)
     q = SimpleNamespace(shape=shape, device="cuda:1")
     kv = SimpleNamespace(shape=(shape[0], kv_length, shape[-1]))
-    assert _use_gfx950_tuning(q, kv, topk) is expected
-    if expected:
-        assert queried_devices == [q.device]
+    assert _get_gfx950_tuning_profile(q, kv, topk) == expected_profile
+    assert queried_devices == ([q.device] if expected_profile is not None or arch == "gfx942" else [])
 
 
 if __name__ == "__main__":

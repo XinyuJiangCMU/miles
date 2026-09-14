@@ -10,18 +10,28 @@ import torch
 from tilelang import language as T
 
 # (batch, query length, heads, head dim, KV length, topk)
-_GFX950_CONFIGS = {
+_GFX950_H16_CONFIGS = {
+    (1, 512, 16, 512, 512, 128),
+    (1, 512, 16, 512, 515, 160),
+    (1, 512, 16, 512, 640, 256),
+    (1, 1024, 16, 512, 1032, 160),
+    (1, 1024, 16, 512, 1280, 384),
+}
+_GFX950_H64_CONFIGS = {
     (1, 512, 64, 512, 640, 256),
     (1, 1024, 64, 512, 1280, 512),
     (1, 2048, 64, 512, 2560, 512),
 }
 
 
-def _use_gfx950_tuning(q, kv, topk):
-    if not torch.version.hip or (*q.shape, kv.shape[1], topk) not in _GFX950_CONFIGS:
-        return False
+def _get_gfx950_tuning_profile(q, kv, topk):
+    config = (*q.shape, kv.shape[1], topk)
+    if not torch.version.hip or config not in _GFX950_H16_CONFIGS | _GFX950_H64_CONFIGS:
+        return None
     arch = torch.cuda.get_device_properties(q.device).gcnArchName.split(":")[0]
-    return arch == "gfx950"
+    if arch != "gfx950":
+        return None
+    return "h16" if config in _GFX950_H16_CONFIGS else "h64"
 
 
 @tilelang.jit(out_idx=[-1])
@@ -121,9 +131,6 @@ def _bwd(
     delta_shape = [B, S, H]
     lse_shape = [B, S, H]
     attn_sink_shape = [H]
-
-    if gfx950_tuning:
-        block_size, threads, num_stages = 16, 256, 1
 
     padded_H = max(tilelang.math.next_power_of_2(H), 16)
     is_hip = getattr(torch.version, "hip", None)
@@ -316,7 +323,7 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
     _, S_kv, _ = kv.shape
     topk = topk_idxs.shape[-1]
 
-    gfx950_tuning = _use_gfx950_tuning(q, kv, topk)
+    gfx950_profile = _get_gfx950_tuning_profile(q, kv, topk)
 
     # Pad topk to next multiple of block_size (kernel requires divisibility)
     block_size = 32
@@ -326,9 +333,22 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
         topk_idxs = torch.cat([topk_idxs, pad], dim=-1).contiguous()
         topk = padded_topk
 
-    if gfx950_tuning:
+    if gfx950_profile:
+        block_size, threads = (32, 128) if gfx950_profile == "h16" else (16, 256)
         preprocess_kernel = preprocess(B, S, H, D, block_ND=64)
-        bwd_kernel = _bwd_gfx950(B, S, S_kv, H, D, topk, sm_scale, gfx950_tuning=True)
+        bwd_kernel = _bwd_gfx950(
+            B,
+            S,
+            S_kv,
+            H,
+            D,
+            topk,
+            sm_scale,
+            block_size=block_size,
+            num_stages=1,
+            threads=threads,
+            gfx950_tuning=True,
+        )
         postprocess_kernel = postprocess(B, S_kv, D, block_N=4)
     else:
         preprocess_kernel = preprocess(B, S, H, D)

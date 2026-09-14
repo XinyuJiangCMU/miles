@@ -17,7 +17,16 @@ from tests.manual.models.deepseek_v4.test_v4_tilelang_sparse_mla import compute_
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_bwd import sparse_mqa_bwd_interface
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 
-CONFIGS = [(1, 512, 64, 512, 640, 256), (1, 1024, 64, 512, 1280, 512), (1, 2048, 64, 512, 2560, 512)]
+CONFIGS = [
+    (1, 512, 16, 512, 512, 128),
+    (1, 512, 16, 512, 515, 160),
+    (1, 512, 16, 512, 640, 256),
+    (1, 1024, 16, 512, 1032, 160),
+    (1, 1024, 16, 512, 1280, 384),
+    (1, 512, 64, 512, 640, 256),
+    (1, 1024, 64, 512, 1280, 512),
+    (1, 2048, 64, 512, 2560, 512),
+]
 
 
 def main():
