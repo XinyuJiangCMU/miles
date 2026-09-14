@@ -9,6 +9,30 @@ import tilelang
 import torch
 from tilelang import language as T
 
+# (batch, query length, heads, head dim, KV length, topk)
+_GFX950_H16_CONFIGS = {
+    (1, 512, 16, 512, 512, 128),
+    (1, 512, 16, 512, 515, 160),
+    (1, 512, 16, 512, 640, 256),
+    (1, 1024, 16, 512, 1032, 160),
+    (1, 1024, 16, 512, 1280, 384),
+}
+_GFX950_H64_CONFIGS = {
+    (1, 512, 64, 512, 640, 256),
+    (1, 1024, 64, 512, 1280, 512),
+    (1, 2048, 64, 512, 2560, 512),
+}
+
+
+def _get_gfx950_tuning_profile(q, kv, topk):
+    config = (*q.shape, kv.shape[1], topk)
+    if not torch.version.hip or config not in _GFX950_H16_CONFIGS | _GFX950_H64_CONFIGS:
+        return None
+    arch = torch.cuda.get_device_properties(q.device).gcnArchName.split(":")[0]
+    if arch != "gfx950":
+        return None
+    return "h16" if config in _GFX950_H16_CONFIGS else "h64"
+
 
 @tilelang.jit(out_idx=[-1])
 def preprocess(
@@ -76,15 +100,7 @@ def postprocess(
     return postprocess_kernel
 
 
-@tilelang.jit(
-    out_idx=[-3],
-    pass_configs={
-        tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-        tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: False,
-    },
-)
-def bwd(
+def _bwd(
     B,
     S,
     S_kv,
@@ -98,6 +114,7 @@ def bwd(
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
+    gfx950_tuning=False,
 ):
     assert topk % block_size == 0, f"topk ({topk}) must be divisible by block_size ({block_size})"
     assert dtype == T.bfloat16
@@ -117,7 +134,9 @@ def bwd(
 
     padded_H = max(tilelang.math.next_power_of_2(H), 16)
     is_hip = getattr(torch.version, "hip", None)
-    if is_hip:
+    if gfx950_tuning:
+        max_block_H = 64
+    elif is_hip:
         # Split large HIP head tiles to reduce LDS use.
         max_block_H = 32 if padded_H >= 64 else 64
     else:
@@ -151,16 +170,25 @@ def bwd(
 
             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
-            dQ_shared = T.alloc_shared([block_H, D], dtype)
+            if not gfx950_tuning:
+                dQ_shared = T.alloc_shared([block_H, D], dtype)
 
             acc_p = T.alloc_fragment([block_H, BS], accum_dtype)
             acc_dp = T.alloc_fragment([block_H, BS], accum_dtype)
             acc_dq = T.alloc_fragment([block_H, D], accum_dtype)
             acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
-            acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
+            if not gfx950_tuning:
+                acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
 
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :D], Q_shared)
             T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :D], dO_shared)
+
+            if gfx950_tuning:
+                lse_local = T.alloc_fragment([block_H], accum_dtype)
+                delta_local = T.alloc_fragment([block_H], accum_dtype)
+                for h_i in T.Parallel(block_H):
+                    lse_local[h_i] = Lse[by, s_i, bz * block_H + h_i]
+                    delta_local[h_i] = Delta[by, s_i, bz * block_H + h_i]
 
             T.clear(acc_dq)
 
@@ -178,9 +206,12 @@ def bwd(
 
                 # P = exp2(scores * sm_scale_log2e - LSE)
                 for h_i, bi_i in T.Parallel(block_H, BS):
-                    acc_p[h_i, bi_i] = T.exp2(
-                        acc_p[h_i, bi_i] * sm_scale_mul_reciprocal_log2 - Lse[by, s_i, bz * block_H + h_i]
-                    )
+                    if gfx950_tuning:
+                        acc_p[h_i, bi_i] = T.exp2(acc_p[h_i, bi_i] * sm_scale_mul_reciprocal_log2 - lse_local[h_i])
+                    else:
+                        acc_p[h_i, bi_i] = T.exp2(
+                            acc_p[h_i, bi_i] * sm_scale_mul_reciprocal_log2 - Lse[by, s_i, bz * block_H + h_i]
+                        )
 
                 T.copy(acc_p, P_shared_cast)
 
@@ -190,9 +221,12 @@ def bwd(
                 )
 
                 for h_i, bi_i in T.Parallel(block_H, BS):
-                    acc_dp[h_i, bi_i] = (
-                        acc_p[h_i, bi_i] * (acc_dp[h_i, bi_i] - Delta[by, s_i, bz * block_H + h_i]) * sm_scale
-                    )
+                    if gfx950_tuning:
+                        acc_dp[h_i, bi_i] = acc_p[h_i, bi_i] * (acc_dp[h_i, bi_i] - delta_local[h_i]) * sm_scale
+                    else:
+                        acc_dp[h_i, bi_i] = (
+                            acc_p[h_i, bi_i] * (acc_dp[h_i, bi_i] - Delta[by, s_i, bz * block_H + h_i]) * sm_scale
+                        )
 
                 T.copy(acc_dp, dP_shared_cast)
 
@@ -210,25 +244,35 @@ def bwd(
                 )
                 T.gemm(P_shared_cast, dO_shared, acc_dkv, transpose_A=True, policy=T.GemmWarpPolicy.FullCol)
 
-                # Atomic store dKV with split to reduce register pressure
-                for s in range(split_store):
-                    for bi_i, d_i in T.Parallel(BS, D):
-                        if bi_i < BS // split_store:
-                            acc_dkv_shared[bi_i, d_i] = acc_dkv[bi_i + s * (BS // split_store), d_i]
-
-                    for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
+                if gfx950_tuning:
+                    for bi_i, d_i in T.Parallel(BS, D // 4):
                         T.atomic_addx4(
-                            dKV[
-                                by,
-                                Indices[by, s_i, i_i * BS + bi_i + s * (BS // split_store)],
-                                d_i * 4,
-                            ],
-                            acc_dkv_shared[bi_i, d_i * 4],
+                            dKV[by, Indices[by, s_i, i_i * BS + bi_i], d_i * 4],
+                            acc_dkv[bi_i, d_i * 4],
                         )
+                else:
+                    # Atomic store dKV with split to reduce register pressure
+                    for s in range(split_store):
+                        for bi_i, d_i in T.Parallel(BS, D):
+                            if bi_i < BS // split_store:
+                                acc_dkv_shared[bi_i, d_i] = acc_dkv[bi_i + s * (BS // split_store), d_i]
+
+                        for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
+                            T.atomic_addx4(
+                                dKV[
+                                    by,
+                                    Indices[by, s_i, i_i * BS + bi_i + s * (BS // split_store)],
+                                    d_i * 4,
+                                ],
+                                acc_dkv_shared[bi_i, d_i * 4],
+                            )
 
             # Store dQ
-            T.copy(acc_dq, dQ_shared)
-            T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
+            if gfx950_tuning:
+                T.copy(acc_dq, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
+            else:
+                T.copy(acc_dq, dQ_shared)
+                T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
 
             # dAttnSink[h] = -sum_{b,s}( Delta[b,s,h] * p_sink[b,s,h] )
             # where p_sink = exp(attn_sink[h]) / Z = exp2(attn_sink[h]*log2e - LSE)
@@ -241,6 +285,18 @@ def bwd(
                 )
 
     return sparse_mqa_bwd_kernel
+
+
+_BWD_PASS_CONFIGS = {
+    tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+    tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+    tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: False,
+}
+bwd = tilelang.jit(out_idx=[-3], pass_configs=_BWD_PASS_CONFIGS)(_bwd)
+_bwd_gfx950 = tilelang.jit(
+    out_idx=[-3],
+    pass_configs={**_BWD_PASS_CONFIGS, tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: True},
+)(_bwd)
 
 
 def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=None):
@@ -267,6 +323,8 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
     _, S_kv, _ = kv.shape
     topk = topk_idxs.shape[-1]
 
+    gfx950_profile = _get_gfx950_tuning_profile(q, kv, topk)
+
     # Pad topk to next multiple of block_size (kernel requires divisibility)
     block_size = 32
     padded_topk = (topk + block_size - 1) // block_size * block_size
@@ -275,9 +333,27 @@ def sparse_mqa_bwd_interface(q, kv, attn_sink, o, do, topk_idxs, lse, sm_scale=N
         topk_idxs = torch.cat([topk_idxs, pad], dim=-1).contiguous()
         topk = padded_topk
 
-    preprocess_kernel = preprocess(B, S, H, D)
-    bwd_kernel = bwd(B, S, S_kv, H, D, topk, sm_scale)
-    postprocess_kernel = postprocess(B, S_kv, D)
+    if gfx950_profile:
+        block_size, threads = (32, 128) if gfx950_profile == "h16" else (16, 256)
+        preprocess_kernel = preprocess(B, S, H, D, block_ND=64)
+        bwd_kernel = _bwd_gfx950(
+            B,
+            S,
+            S_kv,
+            H,
+            D,
+            topk,
+            sm_scale,
+            block_size=block_size,
+            num_stages=1,
+            threads=threads,
+            gfx950_tuning=True,
+        )
+        postprocess_kernel = postprocess(B, S_kv, D, block_N=4)
+    else:
+        preprocess_kernel = preprocess(B, S, H, D)
+        bwd_kernel = bwd(B, S, S_kv, H, D, topk, sm_scale)
+        postprocess_kernel = postprocess(B, S_kv, D)
 
     delta = preprocess_kernel(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
