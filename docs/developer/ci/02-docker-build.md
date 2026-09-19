@@ -31,7 +31,7 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 
 **Output** — one `radixark/miles` image for the platform buildx targets: the SGLang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM at its branch default or caller-pinned commit, Miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
-`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). `rocm724-mi35x` uses its dated Python 3.12 base and its own cp312 shelf (`rocm724-gfx950-v0.5.20`), and sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream. Both Python 3.12 variants enable NVRx, while only `rocm10-mi35x` needs a prebuilt Apex wheel because the rocm724 base already includes Apex.
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). `rocm724-mi35x` uses the dated Python 3.12 base and ROCm 7.2.4 wheels from the `rocm724-gfx950-v0.5.20` release. It sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream.
 
 ## Build script
 
