@@ -27,6 +27,8 @@ from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
 
+FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+
 
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
     """The (rollout, eval) function paths the arguments select."""
@@ -36,13 +38,19 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
         standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
     if args.fully_async:
-        rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+        rollout_path = FULLY_ASYNC_ROLLOUT_PATH
     # Resolved after the override: shared-engine eval must reach the producer it pauses.
     eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
 
 
 def _resolve_rollout_functions(args) -> None:
+    if args.rollout_function_path == FULLY_ASYNC_ROLLOUT_PATH:
+        # The selection --fully-async makes, so enable the mode: as a plugin path it would
+        # skip the checks below and train.py's async-driver guard. A subclass passes the flag.
+        logger.info("--rollout-function-path selects FullyAsyncRolloutFn: enabling --fully-async")
+        args.fully_async = True
+        args.rollout_function_path = None
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
         raise ValueError(
             "--mask-offpolicy-in-partial-rollout does not re-extend the loss mask on the "
@@ -548,6 +556,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Requires train_async.py."
                 ),
             )
+            # Sampling values reach the engine per request only: the built-in generate path sends them
+            # itself and the session server fills fields an agent omits from its session's defaults.
+            # They are never engine launch arguments: an engine shared by rollout and eval has no single default.
             parser.add_argument(
                 "--rollout-temperature",
                 type=float,
@@ -555,10 +566,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="the temperature for the inference engine during rollout.",
             )
             parser.add_argument(
-                "--rollout-top-p", type=float, default=1.0, help="the top-p for the inference engine during rollout."
+                "--rollout-top-p",
+                type=float,
+                default=1.0,
+                help=(
+                    "the top-p for the inference engine during rollout. Values below 1 enable "
+                    "sampling-support replay and require a positive --rollout-top-k."
+                ),
             )
             parser.add_argument(
-                "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
+                "--rollout-top-k",
+                type=int,
+                default=-1,
+                help=(
+                    "the top-k for the inference engine during rollout. Positive values enable "
+                    "sampling-support replay. SGLang's --sampling-mask-max-tokens is the physical "
+                    "returned-support limit because cutoff ties can retain more than top-k tokens."
+                ),
             )
             parser.add_argument(
                 "--rollout-max-context-len",
@@ -1816,7 +1840,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
                     "and skip per-step base sync. Trades host RAM for faster "
-                    "onload/offload. Ignored unless --colocate and LoRA are both on."
+                    "onload/offload. Ignored unless --colocate and LoRA are both on. "
+                    "Also needs 'weight' in --offload-rollout-level: SGLang populates "
+                    "the mirror during release_weights_occupation, so with the weights "
+                    "never released the mirror is never built and the flag does nothing."
                 ),
             )
             parser.add_argument(
@@ -2454,6 +2481,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                "--ci-tito-special-token-count-threshold",
+                type=float,
+                default=0.0,
+                help="Max TITO special_token_count mismatch rate tolerated under --ci-test; other hard types stay at 0.",
+            )
+            parser.add_argument(
                 "--ci-disable-kl-checker",
                 action="store_true",
             )
@@ -2931,6 +2964,31 @@ def miles_validate_args(args):
             "R3 payloads can become very large. TODO: Retract-mode weight updates R3 "
             "have known issues in SGLang and need to be fixed."
         )
+
+    if not 0.0 < args.rollout_top_p <= 1.0:
+        raise ValueError(f"--rollout-top-p must be in (0, 1], got {args.rollout_top_p}")
+    if args.rollout_top_k != -1 and args.rollout_top_k < 1:
+        raise ValueError(f"--rollout-top-k must be -1 or at least 1, got {args.rollout_top_k}")
+    args.use_sampling_support_replay = args.rollout_top_p < 1.0 or args.rollout_top_k > 0
+    if args.use_sampling_support_replay:
+        if args.rollout_top_k == -1:
+            raise ValueError(
+                "--rollout-top-p below 1 requires a positive --rollout-top-k; "
+                "top-p alone does not bound the returned support size"
+            )
+        if args.recompute_logprobs_via_prefill:
+            raise ValueError(
+                "sampling-support replay cannot be combined with --recompute-logprobs-via-prefill; "
+                "prefill scoring does not preserve the rollout sampling support"
+            )
+        if args.kl_coef != 0 or args.use_kl_loss or args.use_opd:
+            # The actor still produces full-vocabulary logits, but replay currently exposes only the
+            # support-normalized actor score to the loss. These objectives can be enabled once the loss
+            # path also preserves an unmasked actor score from the same forward pass.
+            raise ValueError(
+                "sampling-support replay cannot currently be combined with reference KL or teacher distillation; "
+                "those objectives require a separate full-policy actor score"
+            )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
