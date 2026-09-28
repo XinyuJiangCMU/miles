@@ -22,7 +22,8 @@ MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
 NUM_GPUS = 4
 
-# aiter ships no batch-prefill kernel for this model's sink and page-size combination.
+# AITER's JIT artifact selection omits the runtime sink_ptr signal, so its loaded
+# batch-prefill dispatcher has no has_sink=true arm for this call.
 _PLATFORM_EXTRA_ARGS = "--sglang-attention-backend triton " if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" else ""
 
 # (name, experts_shared_outer_loras, virtual_experts_serving)
