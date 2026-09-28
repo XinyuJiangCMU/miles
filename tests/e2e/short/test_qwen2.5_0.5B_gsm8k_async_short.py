@@ -7,7 +7,7 @@ from miles.utils.external_utils import command_utils
 register_cuda_ci(
     est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"], hardware=["hopper", "blackwell"]
 )
-register_rocm_ci(est_time=240, suite="nightly-stage-c-8-gpu-mi350", labels=["short", "mooncake"])
+register_rocm_ci(est_time=300, suite="nightly-stage-c-8-gpu-mi350", labels=["short", "mooncake"])
 
 FEW_GPU = command_utils.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
