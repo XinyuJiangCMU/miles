@@ -19,7 +19,8 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_policy_loss,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.misc import load_function
+from miles.backends.training_utils.sampling_mask import get_rollout_sampling_masks
+from miles.utils.function_registry import load_function
 from miles.utils.types import RolloutBatch
 
 
@@ -111,6 +112,7 @@ def policy_loss_function(
     total_lengths = batch["total_lengths"]
     max_seq_lens = batch.get("max_seq_lens", None)
     calculate_entropy = args.entropy_coef != 0 or args.observe_training_entropy
+    rollout_sampling_mask = get_rollout_sampling_masks(batch) if args.use_sampling_support_replay else None
 
     log_probs_and_entropy = get_log_probs_and_entropy(
         logits,
@@ -121,6 +123,7 @@ def policy_loss_function(
         with_entropy=calculate_entropy,
         entropy_requires_grad=args.entropy_coef != 0,
         max_seq_lens=max_seq_lens,
+        rollout_sampling_mask=rollout_sampling_mask,
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
@@ -333,14 +336,18 @@ def policy_loss_function(
         if args.kl_loss_coef != 0:
             loss = loss + args.kl_loss_coef * kl_loss
 
-    # make sure the gradient could backprop correctly.
+    # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
     if log_probs.numel() == 0:
-        loss += 0 * logits.sum()
+        loss += 0 * logits.sum(dtype=torch.float32)
 
-    train_scored_log_probs = old_log_probs
     train_rollout_logprob_abs_diff = None
     train_rollout_kl = None
     if rollout_old_log_probs:
+        # The loss baseline may be rollout log-probs. Diagnostics must use an
+        # independently scored trainer policy, even in that case.
+        train_scored_log_probs = (
+            torch.cat(trainer_scored_log_probs, dim=0) if trainer_scored_log_probs is not None else log_probs.detach()
+        )
         rollout_log_probs = torch.cat(rollout_old_log_probs, dim=0)
         abs_diff = (train_scored_log_probs - rollout_log_probs).abs()
         abs_diff = torch.where(
@@ -493,9 +500,9 @@ def sft_loss_function(
     log_probs = torch.cat(log_probs, dim=0)
     loss = -sum_of_sample_mean(log_probs)
 
-    # make sure the gradient could backprop correctly.
+    # make sure the gradient could backprop correctly; fp32 sum avoids fp16 inf -> nan
     if log_probs.numel() == 0:
-        loss += 0 * logits.sum()
+        loss += 0 * logits.sum(dtype=torch.float32)
 
     return (
         loss,
@@ -505,7 +512,11 @@ def sft_loss_function(
     )
 
 
-def get_loss_function(args: Namespace) -> LossFunction:
+def get_loss_function(args: Namespace, loss_fn: str | None = None) -> LossFunction:
+    if loss_fn is not None:
+        from miles.backends.training_utils.loss_hub.tinker_losses import TINKER_LOSS_FUNCTIONS
+
+        return TINKER_LOSS_FUNCTIONS[loss_fn]
     match args.loss_type:
         case "policy_loss":
             return policy_loss_function

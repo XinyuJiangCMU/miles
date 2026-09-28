@@ -25,7 +25,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -35,9 +35,9 @@ REPO_ROOT = SCRIPT_DIR.parents[3]
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_name: str = "GLM-5.2"
     megatron_model_type: str = "glm5.2-744B-A40B"
     num_gpus_per_node: int = 4
@@ -55,7 +55,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_batch_size: int = 8
     n_samples_per_prompt: int = 8
     global_batch_size: int = 64
-    rollout_max_response_len: int = 16384
+    rollout_max_response_len: int = 8192
+    # whole-session budget; CP splits it, so it also sets per-rank activations.
+    # TODO(#2591): the agent loop cannot see this cut and generates past it.
+    max_seq_len: int = 65536
     # Max concurrently generating trajectories, decoupled from the train batch;
     # also sizes the Daytona pool so every in-flight trajectory has a sandbox.
     async_max_concurrent_samples: int = 128
@@ -66,19 +69,20 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_interval: int = 100000  # effectively: only the end-of-training save
 
     # OpenEnv / Daytona
-    prompt_data: str = ""  # default: <data_dir>/tbench2_train.jsonl
+    prompt_data: str = ""  # default: <data_dir>/tbench2_train69.jsonl
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     openenv_max_turns: int = int(os.environ.get("OPENENV_MAX_TURNS", "30"))
     openenv_max_rollout_time_seconds: int = int(os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
     openenv_tb2_tasks_dir: str = os.environ.get("OPENENV_TB2_TASKS_DIR", "")
     openenv_daytona_create_concurrency: int = int(os.environ.get("OPENENV_DAYTONA_CREATE_CONCURRENCY", "8"))
+    # jittered-backoff attempts (~30s cap)
+    openenv_daytona_create_max_retries: int = int(os.environ.get("OPENENV_DAYTONA_CREATE_MAX_RETRIES", "8"))
     openenv_launcher: str = os.environ.get("OPENENV_LAUNCHER", os.environ.get("USER", "miles"))
     openenv_run_id: str = os.environ.get("OPENENV_RUN_ID", "")
 
     # Eval over a held-out tbench2 split on the shared rollout engines (the
-    # producer pauses for the duration). A dedicated fleet would need GPUs
-    # this 8+8 split has none of. None disables.
-    eval_interval: int | None = 10
+    # producer pauses for the duration). 0 disables.
+    eval_interval: int = 10
     eval_prompt_data: str = ""  # default: <data_dir>/tbench2_eval.jsonl
     n_samples_per_eval_prompt: int = 2
     daytona_api_key: str = os.environ.get("DAYTONA_API_KEY", "")
@@ -103,8 +107,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
         ), "GB300 config: 8 train nodes plus inference nodes (4 GPUs each)"
         assert self.daytona_api_key, "DAYTONA_API_KEY must be set in the environment"
         if not self.prompt_data:
-            self.prompt_data = f"{self.data_dir}/tbench2_train.jsonl"
-        if self.eval_interval is not None and not self.eval_prompt_data:
+            self.prompt_data = f"{self.data_dir}/tbench2_train69.jsonl"
+        if self.eval_interval and not self.eval_prompt_data:
             self.eval_prompt_data = f"{self.data_dir}/tbench2_eval.jsonl"
 
 
@@ -117,6 +121,7 @@ def _assert_openenv_deps():
 
 
 def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     _assert_openenv_deps()
 
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
@@ -145,14 +150,14 @@ def _execute_train(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {args.rollout_max_response_len} "
-        "--max-seq-len 131072 "
+        f"--max-seq-len {args.max_seq_len} "
         "--rollout-temperature 0.8 "
         f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
     )
 
     eval_args = ""
-    if args.eval_interval is not None:
+    if args.eval_interval:
         eval_args = (
             f"--eval-interval {args.eval_interval} "
             f"--eval-prompt-data tbench2 {args.eval_prompt_data} "
@@ -169,9 +174,10 @@ def _execute_train(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
+        "--session-server-workers 32 "
     )
 
-    # 32-GPU training half. CP4 splits the 131k max sequence to ~33k per rank;
+    # 32-GPU training half. CP4 splits --max-seq-len across the CP ranks;
     # TP2 (not TP1) because at TP1 the per-rank non-expert weights alone
     # overflow 276GB at checkpoint load.
     perf_args = (
@@ -201,7 +207,7 @@ def _execute_train(args: ScriptArgs):
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
         "--use-tis "
-        "--tis-clip-low 0.5 "
+        "--tis-clip-low 0.0 "
         "--tis-clip 2.0 "
     )
 
@@ -224,11 +230,11 @@ def _execute_train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.85 "
         f"--sglang-ep-size {sglang_world_size} "
         "--sglang-kv-cache-dtype fp8_e4m3 "
-        "--sglang-nsa-decode-backend flashmla_kv "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-dsa-decode-backend flashmla_kv "
+        "--sglang-dsa-prefill-backend flashmla_sparse "
         "--sglang-attention-backend nsa "
         "--sglang-page-size 64 "
-        "--sglang-cuda-graph-max-bs 32 "
+        "--sglang-cuda-graph-max-bs-decode 32 "
         f"--sglang-max-running-requests {256 if balanced else 512} "
         f"--sglang-chunked-prefill-size {32768 if balanced else 2048 * sglang_world_size} "
         "--sglang-watchdog-timeout 3600 "
@@ -288,7 +294,7 @@ def _execute_train(args: ScriptArgs):
         f"{agent_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -321,6 +327,7 @@ def _execute_train(args: ScriptArgs):
         "OPENENV_MAX_ROLLOUT_TIME_SECONDS": str(args.openenv_max_rollout_time_seconds),
         "OPENENV_TB2_TASKS_DIR": args.openenv_tb2_tasks_dir,
         "OPENENV_DAYTONA_CREATE_CONCURRENCY": str(args.openenv_daytona_create_concurrency),
+        "OPENENV_DAYTONA_CREATE_MAX_RETRIES": str(args.openenv_daytona_create_max_retries),
         "OPENENV_LAUNCHER": args.openenv_launcher,
         "OPENENV_RUN_ID": args.openenv_run_id,
         "DAYTONA_API_KEY": args.daytona_api_key,
@@ -328,7 +335,6 @@ def _execute_train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars=extra_env_vars,
@@ -345,7 +351,7 @@ def _cli():
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     _execute_train(args)
 

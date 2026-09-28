@@ -11,7 +11,6 @@ welcome: bug reports, doc fixes, new model recipes, full features.
 miles/
 ├── train.py                  # synchronous entry point
 ├── train_async.py            # fully-async entry point
-├── train_multi_lora_async.py # multi-LoRA async entry point
 ├── miles/                    # the package
 │   ├── backends/
 │   │   ├── megatron_utils/   # Megatron actor, weight sync, checkpointing, fp32 markers
@@ -29,11 +28,11 @@ miles/
 │   ├── mbridge/              # per-architecture weight bridges
 │   ├── megatron_bridge/      # megatron.bridge shims
 │   └── optimizers/           # optimizer plugins (NVMe streaming store)
-├── scripts/                  # launchers, one per recipe; scripts/models/ holds MODEL_ARGS
+├── scripts/                  # launchers, one per recipe; scripts/models/ holds the architecture flags
 ├── tools/                    # checkpoint converters, quantizers, profilers
 ├── tests/                    # fast / fast-gpu / e2e / ci / manual (see Running CI)
 ├── docker/                   # Dockerfile, Dockerfile.rocm, build.py, patches
-├── docs/                     # the source of this site, plus docs/ci internals
+├── docs/                     # the source of this site, plus docs/developer/ci internals
 └── .claude/                  # rules and skills (see What lives in .claude)
 ```
 
@@ -116,16 +115,17 @@ binds that central document. Editing such a file means updating its documentatio
 same change, and editing the document means finding the files that name it.
 
 ```python
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 ```
 
 Current sentinels, so you know when you have walked into one:
 
 | File | Governing document |
 |---|---|
-| `.github/workflows/pr-test.yml`, `pr-test-rocm.yml` | `docs/ci/00-stage.md`, `docs/ci/01-label.md` |
-| `docker/build.py` | `docs/ci/02-docker-build.md` |
-| `tests/ci/metric_history/**` | `docs/ci/03-metric-history-gate.md` |
+| `.github/workflows/pr-test.yml`, `pr-test-rocm.yml` | `docs/developer/ci/00-stage.md`, `docs/developer/ci/01-label.md` |
+| `.github/workflows/bot-bump-miles-version.yml`, `bot-cherry-pick.yml`, `release-*.yml` | `docs/developer/ci/04-release.md` |
+| `docker/build.py` | `docs/developer/ci/02-docker-build.md` |
+| `tests/ci/metric_history/**` | `docs/developer/ci/03-metric-history-gate.md` |
 
 Grep for `doc-dev:` before editing anything under `.github/workflows/` or `docker/`. A
 change that lands the code and leaves the document stale is the failure mode this
@@ -135,8 +135,10 @@ convention exists to prevent.
 
 ### What a PR runs
 
-Two things start automatically on every PR: the `pre-commit` workflow, and `PR Test`
-(`.github/workflows/pr-test.yml`). `PR Test` resolves a policy and an image, runs the two
+Two things start automatically: the `pre-commit` workflow on every PR, and `PR Test`
+(`.github/workflows/pr-test.yml`) on every PR based on `main`. A PR based on another branch,
+such as a stacked PR, runs `PR Test` only with a `run-ci*` label (see
+[Labels](/developer/ci/01-label)). `PR Test` resolves a policy and an image, runs the two
 CPU stages, and then the GPU stages, which are gated on `stage-a-cpu` succeeding so a
 formatting or import error does not burn GPU time. A PR that touches `docker/Dockerfile`,
 `docker/build.py`, `docker/verify_transformer_engine.py`, `docker/patch/**` or
@@ -147,8 +149,8 @@ formatting or import error does not burn GPU time. A PR that touches `docker/Doc
 Selection is declared in the test file, never in the workflow YAML.
 
 - **CPU tests go in `tests/fast/`.** Every `test_*.py` there is auto-registered as a CPU
-  test in `stage-a-cpu` with no labels, and runs on every PR. A `register_cuda_ci` under
-  `tests/fast/` is a hard error; move the file to `tests/fast-gpu/`.
+  test in `stage-a-cpu` with no labels, and runs in every `PR Test` run. A
+  `register_cuda_ci` under `tests/fast/` is a hard error; move the file to `tests/fast-gpu/`.
 - **Everywhere else, register explicitly.** One top-level call per file:
 
 ```python
@@ -156,15 +158,13 @@ from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
     est_time=600,                 # rough seconds; balances shards and sets the per-file timeout
-    suite="stage-c-4-gpu-h200",   # the hardware bucket that runs it
-    labels=["megatron"],          # [] or omitted means always-on
+    suite="stage-c-4-gpu-h200",   # the home stage that runs it by default
+    labels=["megatron"],          # required for CUDA and ROCm tests
+    hardware=["hopper", "blackwell"],  # required CUDA generations
 )
 ```
 
-`register_cpu_ci`, `register_cuda_ci` and `register_rocm_ci` share that signature, plus
-`nightly=True` (nightly and weekly cadence only) and `disabled="<reason + issue link>"` (reported as
-skipped rather than deleted). The calls are parsed from the AST, so they must be
-top-level, literal, and unaliased.
+`register_cpu_ci` allows empty labels for always-on CPU coverage; `register_cuda_ci` and `register_rocm_ci` require a non-empty domain-label list. `register_cuda_ci` also requires a non-empty `hardware` list, with the generation matching its home `suite` first. All three accept `nightly=True` (nightly, weekly, and release cadence only) and `disabled="<reason + issue link>"` (reported as skipped rather than deleted). The calls are parsed from the AST, so they must be top-level, literal, and unaliased.
 
 The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e` and `tests/ci` for
 `test_*.py`, and a file outside `tests/fast/` with no registration fails collection with
@@ -272,9 +272,9 @@ map it to a host.
 
 ## Where to ask
 
-* **Quick questions:** the Miles channel of the [SGLang Slack](https://slack.sglang.ai).
+* **Quick questions:** the `#miles-rl` channel of the [SGLang Slack](https://slack.sglang.ai).
 * **Design discussions:** a GitHub Discussion, or an Issue labeled `discussion`.
-* **CI internals:** [Stage](/ci/00-stage) (stages), [Labels](/ci/01-label) (label
-  semantics), [Docker build](/ci/02-docker-build) (images),
-  [Metric history & regression gate](/ci/03-metric-history-gate) (metric gate), and the
-  [CI Contributor Guide](/ci/contributor-guide) for the long-form version of this section.
+* **CI internals:** [Stage](/developer/ci/00-stage) (stages), [Labels](/developer/ci/01-label) (label
+  semantics), [Docker build](/developer/ci/02-docker-build) (images),
+  [Metric history & regression gate](/developer/ci/03-metric-history-gate) (metric gate), and the
+  [CI Contributor Guide](/developer/ci/contributor-guide) for the long-form version of this section.

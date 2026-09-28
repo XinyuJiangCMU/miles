@@ -38,6 +38,7 @@ class ExternalSglangEvalFn(CheckpointEvalFn):
     """Launch (or attach to) a standalone sglang server and eval snapshots on it."""
 
     def __init__(self, input: RolloutFnConstructorInput):
+        super().__init__(input)
         args = input.args
         url = os.environ.get("MILES_EXTERNAL_EVAL_URL")
         gpus = os.environ.get("MILES_EXTERNAL_EVAL_GPUS")
@@ -109,6 +110,6 @@ class ExternalSglangEvalFn(CheckpointEvalFn):
                 return
         raise RuntimeError(f"weight_version pin failed for {checkpoint_dir} (expected {weight_version})")
 
-    def dispose(self) -> None:
+    async def dispose(self) -> None:
         if self._proc is not None:
             self._proc.terminate()

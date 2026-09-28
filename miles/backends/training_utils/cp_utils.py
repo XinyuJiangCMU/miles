@@ -3,15 +3,9 @@ from collections.abc import Callable
 
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 import torch.nn.functional as F
 
 from .parallel import get_parallel_state
-
-try:
-    from fla.ops.cp import build_cp_context as _fla_build_cp_context
-except ImportError:
-    _fla_build_cp_context = None
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +15,19 @@ def get_logits_and_tokens_offset_with_cp(
     response_length: int,
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
+    cp_rank: int | None = None,
+    cp_size: int | None = None,
 ):
     """
     All offsets start from the begining of the prompt.
+
+    ``cp_rank`` / ``cp_size`` default to this process's parallel state; pass them
+    explicitly to compute another rank's offsets outside the process group.
     """
-    parallel_state = get_parallel_state()
-    cp_rank = parallel_state.cp.rank
-    cp_size = parallel_state.cp.size
+    if cp_rank is None or cp_size is None:
+        parallel_state = get_parallel_state()
+        cp_rank = parallel_state.cp.rank
+        cp_size = parallel_state.cp.size
     assert cp_size > 1
 
     prompt_length = total_length - response_length
@@ -431,28 +431,36 @@ def slice_log_prob_with_cp(
         return torch.cat([chunk_1, chunk_2], dim=0)
 
 
-def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: torch.device):
-    """Build fla CP context for a GatedDeltaNet module from packed sequence boundaries.
+def assemble_log_prob_from_cp(
+    chunks: dict[int, torch.Tensor],
+    total_length: int,
+    response_length: int,
+    cp_size: int,
+    qkv_format: str = "thd",
+    max_seq_len: int | None = None,
+) -> torch.Tensor:
+    """Inverse of `slice_log_prob_with_cp`: per-rank slices back to one response.
 
-    Args:
-        module: GDN module with ``cp_group`` / ``cp_world_size`` / ``conv_kernel_size``.
-        cu_seqlens: Global packed sequence boundaries (e.g. ``packed_seq_params.cu_seqlens_q``).
-        device: Target device.
-
-    Returns ``None`` when CP is not configured on the module (``cp_group`` not set).
-    Raises ``RuntimeError`` if hybrid CP is configured but ``fla.ops.cp`` is missing.
+    `chunks` maps cp_rank to that rank's slice; every rank must be present.
+    Offsets come from the same helper the forward split uses.
     """
-    cp_group = getattr(module, "cp_group", None)
-    if cp_group is None:
-        return None
-    if _fla_build_cp_context is None:
-        raise RuntimeError(
-            "Hybrid CP requires fla.ops.cp (flash-linear-attention >= 0.4.2) " "but it could not be imported."
+    assert cp_size > 1, "no reassembly needed at cp_size=1"
+    missing = sorted(set(range(cp_size)) - set(chunks))
+    assert not missing, f"cp ranks {missing} missing; cannot reassemble a partial group"
+
+    prompt_length = total_length - response_length
+    out = torch.zeros(response_length, dtype=next(iter(chunks.values())).dtype)
+    for cp_rank, chunk in chunks.items():
+        _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
+            total_length, response_length, qkv_format, max_seq_len, cp_rank=cp_rank, cp_size=cp_size
         )
-    if cu_seqlens is None or cu_seqlens.numel() < 2:
-        raise ValueError(f"Hybrid CP requires valid cu_seqlens (at least 2 elements) but got {cu_seqlens}")
-    return _fla_build_cp_context(
-        cu_seqlens=cu_seqlens.to(device=device, dtype=torch.int32),
-        group=cp_group,
-        conv1d_kernel_size=module.conv_kernel_size,
-    )
+        taken = 0
+        for lo, hi in logits_offset:
+            start, stop = lo - (prompt_length - 1), hi - (prompt_length - 1)
+            width = stop - start
+            if width <= 0:
+                continue
+            out[start:stop] = chunk[taken : taken + width]
+            taken += width
+        assert taken == len(chunk), f"cp rank {cp_rank}: consumed {taken} of {len(chunk)} values"
+    return out

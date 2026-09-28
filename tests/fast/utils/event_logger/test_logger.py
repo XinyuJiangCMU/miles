@@ -1,4 +1,7 @@
+import asyncio
 import json
+import logging
+import math
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,12 +13,13 @@ from miles.utils.audit_utils.event_logger.logger import (
     EventLogger,
     event_logger_context,
     get_event_logger,
+    read_events,
     set_event_logger,
 )
 from miles.utils.audit_utils.event_logger.models import MetricEvent, WitnessAllocateIdEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
 
-_TEST_SOURCE = MainProcessIdentity()
+_TEST_SOURCE = SimpleProcessIdentity(component="main")
 
 
 def _make_logger(log_dir: Path, file_name: str = "events.jsonl") -> EventLogger:
@@ -26,6 +30,12 @@ _EVENT_CLS = WitnessAllocateIdEvent
 _EVENT_PARTIAL: dict = dict(
     rollout_id=0, attempt=0, witness_id_to_sample_index={10: 0, 11: 1, 12: 2}, counter_after=13
 )
+
+_LOGGER_MODULE_LOGGER = "miles.utils.audit_utils.event_logger.logger"
+
+
+def _structured_messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.name == _LOGGER_MODULE_LOGGER]
 
 
 class TestEventLoggerWritesJsonl:
@@ -44,6 +54,21 @@ class TestEventLoggerWritesJsonl:
             parsed = json.loads(line)
             assert "timestamp" in parsed
             assert "type" in parsed
+
+
+class TestEventLoggerStructuredPrint:
+    def test_printed_event_uses_audit_structured_log_tag(self, tmp_path: Path, caplog) -> None:
+        """A printed event is echoed as one audit-tagged op=event record naming the event class and its fields."""
+        logger = _make_logger(tmp_path)
+
+        with caplog.at_level(logging.INFO, logger=_LOGGER_MODULE_LOGGER):
+            logger.log(_EVENT_CLS, _EVENT_PARTIAL)
+        logger.close()
+
+        messages = _structured_messages(caplog)
+        assert len(messages) == 1
+        assert messages[0].startswith("audit op=event event=WitnessAllocateIdEvent ")
+        assert "counter_after=13" in messages[0]
 
 
 class TestEventLoggerAutoFillsMetadata:
@@ -188,6 +213,18 @@ class TestReadEvents:
         assert len(events) == 3
 
 
+class TestEventLoggerKeepsNonFiniteMetrics:
+    def test_a_nan_metric_reads_back_as_a_nan(self, tmp_path: Path) -> None:
+        """Written as json null it reads back absent, so a diverged run would look like one that never reported."""
+        logger = _make_logger(tmp_path)
+        logger.log(MetricEvent, dict(rollout_id=0, attempt=0, metrics={"train/loss": math.nan}), print_log=False)
+        logger.close()
+
+        [event] = read_events(tmp_path)
+
+        assert math.isnan(event.metrics["train/loss"])
+
+
 class TestWithContext:
     def test_injects_context_fields_into_logged_event(self, tmp_path: Path) -> None:
         """Fields from with_context are merged into events logged inside the scope."""
@@ -314,3 +351,36 @@ class TestEventLoggerContextDecorator:
         assert seen == [(3, 8)]
         parsed = json.loads((tmp_path / "events.jsonl").read_text().strip())
         assert (parsed["rollout_id"], parsed["attempt"]) == (3, 8)
+
+    async def test_initialized_injects_fields_into_events_an_async_method_logs(self, tmp_path: Path) -> None:
+        """An awaited method keeps the context across its suspension points, or its events lose their identity."""
+        logger = _make_logger(tmp_path)
+        set_event_logger(logger)
+
+        class Worker:
+            @event_logger_context(lambda self, rollout_id: {"rollout_id": rollout_id})
+            async def run(self, rollout_id: int) -> None:
+                await asyncio.sleep(0)
+                get_event_logger().log(MetricEvent, dict(metrics={"ok": True}))
+
+        try:
+            await Worker().run(42)
+            logger.close()
+        finally:
+            set_event_logger(None)
+
+        parsed = json.loads((tmp_path / "events.jsonl").read_text().strip())
+        assert parsed["rollout_id"] == 42
+
+    async def test_uninitialized_awaits_an_async_method_without_context(self) -> None:
+        """Decorating a method must not make it fail wherever the event logger was never set up."""
+        set_event_logger(None)
+
+        @event_logger_context(lambda obj, x: {"rollout_id": x})
+        async def method(obj: object, x: int) -> int:
+            return x * 2
+
+        try:
+            assert await method(object(), 3) == 6
+        finally:
+            set_event_logger(None)

@@ -1,5 +1,22 @@
 // Minimal dependency-free canvas charts (line + scatter) with point picking.
 
+// [min, max] over one or more arrays, walked in place. Math.min(...arr) passes
+// every element as a call argument, and past ~100k of them the engine throws
+// "RangeError: Maximum call stack size exceeded" -- a long run's per-GPU
+// telemetry crosses that. Empty input gives [Infinity, -Infinity], as the
+// spread form did.
+export function extent(...arrays) {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const values of arrays) {
+    for (const v of values) {
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
+  return [lo, hi];
+}
+
 const MARGIN = { left: 52, right: 14, top: 10, bottom: 24 };
 
 function setupCanvas(canvas) {
@@ -46,15 +63,24 @@ export function drawChart(canvas, points, opts = {}) {
     bucketed = true;
     const size = Math.ceil(pts.length / MAX_RAW_POINTS);
     const buckets = [];
-    for (let i = 0; i < pts.length; i += size) {
-      const bucket = pts.slice(i, i + size);
-      const y = bucket.reduce((sum, p) => sum + p.y, 0) / bucket.length;
+    // a bucket spanning a gap would draw the line straight across the hole
+    let cur = [];
+    const flush = () => {
+      if (!cur.length) return;
+      const y = cur.reduce((sum, p) => sum + p.y, 0) / cur.length;
       buckets.push({
-        x: bucket[0].x,
+        x: cur[0].x,
         y,
-        label: `${fmt(bucket[0].x)}–${fmt(bucket.at(-1).x)}\nmean = ${fmt(y)} (${bucket.length} pts)`,
+        gap: cur[0].gap,
+        label: `${fmt(cur[0].x)}–${fmt(cur.at(-1).x)}\nmean = ${fmt(y)} (${cur.length} pts)`,
       });
+      cur = [];
+    };
+    for (const p of pts) {
+      if (cur.length && (p.gap || cur.length >= size)) flush();
+      cur.push(p);
     }
+    flush();
     pts = buckets;
   }
   const { ctx, width, height } = setupCanvas(canvas);
@@ -74,20 +100,24 @@ export function drawChart(canvas, points, opts = {}) {
     return;
   }
 
+  const bands = opts.bands ?? [];
   let xMin, xMax;
   if (zoom?.x) {
     [xMin, xMax] = zoom.x;
   } else {
-    const xs = pts.map((p) => p.x);
-    [xMin, xMax] = [Math.min(...xs), Math.max(...xs)];
+    [xMin, xMax] = extent(pts.map((p) => p.x));
+    // bands cover point-free regions: widen the domain so they stay visible
+    for (const b of bands) {
+      xMin = Math.min(xMin, b.x0);
+      xMax = Math.max(xMax, b.x1);
+    }
   }
   if (xMin === xMax) [xMin, xMax] = [xMin - 0.5, xMax + 0.5];
   let yMin, yMax;
   if (zoom?.y) {
     [yMin, yMax] = zoom.y;
   } else {
-    const ys = pts.map((p) => p.y);
-    [yMin, yMax] = ys.length ? [Math.min(...ys), Math.max(...ys)] : [0, 1];
+    [yMin, yMax] = pts.length ? extent(pts.map((p) => p.y)) : [0, 1];
     if (yMin === yMax) [yMin, yMax] = [yMin - 0.5, yMax + 0.5];
     const yPad = (yMax - yMin) * 0.08;
     yMin -= yPad;
@@ -116,12 +146,23 @@ export function drawChart(canvas, points, opts = {}) {
   ctx.beginPath();
   ctx.rect(MARGIN.left, MARGIN.top, plotW, plotH);
   ctx.clip();
+  for (const b of bands) {
+    ctx.globalAlpha = b.strong ? 0.3 : 0.14;
+    ctx.fillStyle = colBorder;
+    ctx.fillRect(X(b.x0), MARGIN.top, Math.max(X(b.x1) - X(b.x0), 1), plotH);
+    ctx.globalAlpha = 1;
+    if (b.label && X(b.x1) - X(b.x0) > 44) {
+      ctx.fillStyle = colText;
+      ctx.fillText(b.label, X(b.x0) + 4, MARGIN.top + 12);
+    }
+  }
   if (opts.line !== false) {
     const linePts = bucketed ? pts : points;
     ctx.strokeStyle = colMain;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    linePts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
+    // gap = first point after a null run: lift the pen
+    linePts.forEach((p, i) => (i && !p.gap ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
     ctx.stroke();
   }
   if (!bucketed) {
@@ -346,7 +387,7 @@ export function drawMultiLine(canvas, seriesList, opts = {}) {
     [yMin, yMax] = zoom.y;
   } else {
     [yMin, yMax] = alive.length
-      ? [Math.min(...alive.map((s) => Math.min(...s.value))), Math.max(...alive.map((s) => Math.max(...s.value)))]
+      ? extent(...alive.map((s) => s.value))
       : [0, 1];
   }
   if (yMin === yMax) [yMin, yMax] = [yMin - 0.5, yMax + 0.5];

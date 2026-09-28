@@ -151,7 +151,7 @@ class TopologySnapshot(Record):
 class DataBufferSample(Record):
     """One report of ``RolloutDataSourceWithBuffer.get_buffer_length()``
     (design doc's "show the data status in databuffer" ask). Appended once
-    per ``RolloutManager.generate()`` call — a no-op for plain
+    per ``RolloutExecutor.get()`` call — a no-op for plain
     ``RolloutDataSource`` runs, which never buffer samples across steps.
     Low-rate and unpartitioned like ``TopologySnapshot``: only the latest
     value matters for display."""
@@ -297,6 +297,7 @@ class _PartitionReader:
         self._max_blocks = max_blocks
         self._blocks: OrderedDict[str, Any] = OrderedDict()
         self._offsets: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def files(self) -> list[tuple[str, Path]]:
         out = [(self.LEGACY_KEY, self.legacy_path)] if self.legacy_path.exists() else []
@@ -331,27 +332,29 @@ class _PartitionReader:
         return added
 
     def _block(self, key: str, path: Path) -> Any:
-        offset = self._offsets.get(key, 0)
-        if key in self._blocks and path.stat().st_size <= offset:
+        # read+parse release the GIL; two fills from one stale offset append the bytes twice
+        with self._lock:
+            offset = self._offsets.get(key, 0)
+            if key in self._blocks and path.stat().st_size <= offset:
+                self._blocks.move_to_end(key)
+                return self._blocks[key]
+            with open(path, "rb") as f:
+                f.seek(offset)
+                chunk = f.read()
+            end = chunk.rfind(b"\n")
+            if end >= 0:
+                new = self._parse(chunk[: end + 1], path, offset)
+                pieces = [self._blocks[key], new] if key in self._blocks else [new]
+                self._blocks[key] = self._concat([piece for piece in pieces if self._length(piece)])
+                self._offsets[key] = offset + end + 1
+            elif key not in self._blocks:
+                self._blocks[key] = self._concat([])
+                self._offsets[key] = offset
             self._blocks.move_to_end(key)
+            while len(self._blocks) > self._max_blocks:
+                evicted, _ = self._blocks.popitem(last=False)
+                self._offsets.pop(evicted, None)
             return self._blocks[key]
-        with open(path, "rb") as f:
-            f.seek(offset)
-            chunk = f.read()
-        end = chunk.rfind(b"\n")
-        if end >= 0:
-            new = self._parse(chunk[: end + 1], path, offset)
-            pieces = [self._blocks[key], new] if key in self._blocks else [new]
-            self._blocks[key] = self._concat([piece for piece in pieces if self._length(piece)])
-            self._offsets[key] = offset + end + 1
-        elif key not in self._blocks:
-            self._blocks[key] = self._concat([])
-            self._offsets[key] = offset
-        self._blocks.move_to_end(key)
-        while len(self._blocks) > self._max_blocks:
-            evicted, _ = self._blocks.popitem(last=False)
-            self._offsets.pop(evicted, None)
-        return self._blocks[key]
 
     def edge_stamps(self) -> list[float]:
         """Global-range candidates from the first line of the oldest file and
@@ -783,6 +786,15 @@ class MetricStore:
 
     def step_keys(self) -> list[str]:
         return sorted({r.step_key for r in self.records[Stream.METRICS] if r.step_key is not None})
+
+    def step_key_of_metric_key(self) -> dict[str, str]:
+        ans: dict[str, str] = {}
+        for record in self.records[Stream.METRICS]:
+            if record.step_key is None:
+                continue
+            for key in record.metrics:
+                ans[key] = record.step_key
+        return ans
 
     def metric_series(
         self, keys: list[str], *, x_key: str, t0: float | None = None, t1: float | None = None
@@ -1467,14 +1479,23 @@ class MetricStore:
         perf metrics, with the wall-clock ts as the timeline zoom anchor."""
         out = []
         for record in self.records[Stream.METRICS]:
-            if record.step_key != "rollout/step":
+            if record.step_key is None or not record.step_key.endswith("rollout/step"):
                 continue
-            step_time = record.metrics.get("perf/step_time")
-            wait_ratio = record.metrics.get("perf/wait_time_ratio")
+            step_time = _metric_by_suffix(record.metrics, "perf/step_time")
+            wait_ratio = _metric_by_suffix(record.metrics, "perf/wait_time_ratio")
             if step_time is None and wait_ratio is None:
                 continue
             out.append(dict(step=record.step, ts=record.ts, step_time=step_time, wait_ratio=wait_ratio))
         return out
+
+
+def _metric_by_suffix(metrics: dict[str, float], base_key: str) -> float | None:
+    if (value := metrics.get(base_key)) is not None:
+        return value
+    for key, value in metrics.items():
+        if key.endswith(f"/{base_key}"):
+            return value
+    return None
 
 
 # ------------------------------ downsampling --------------------------------
