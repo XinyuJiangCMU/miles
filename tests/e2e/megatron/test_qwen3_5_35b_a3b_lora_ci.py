@@ -29,6 +29,13 @@ _CONFIGS = [
 
 
 def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
+    extra_args = "--ci-test --ci-disable-logprobs-checker "
+    if not virtual_experts:
+        extra_args += "--no-sglang-lora-use-virtual-experts "
+    # ROCm shared-expert fusion requires per-expert LoRA factors.
+    if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" and shared_outer:
+        extra_args += "--sglang-disable-shared-experts-fusion "
+
     return ScriptArgs.from_env(
         model_name="Qwen3.5-35B-A3B",
         num_nodes=1,
@@ -36,16 +43,7 @@ def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
         num_rollout=1,
         experts_shared_outer_loras=shared_outer,
         enable_wandb=False,
-        extra_args=(
-            "--ci-test --ci-disable-logprobs-checker "
-            + ("" if virtual_experts else "--no-sglang-lora-use-virtual-experts ")
-            + (
-                # ROCm shared-expert fusion requires per-expert LoRA factors.
-                "--sglang-disable-shared-experts-fusion "
-                if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" and shared_outer
-                else ""
-            )
-        ),
+        extra_args=extra_args,
     )
 
 
