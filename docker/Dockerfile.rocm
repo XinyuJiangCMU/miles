@@ -127,7 +127,8 @@ RUN if [ "${FLASH_ATTN_USE_WHEEL}" = "1" ]; then \
     fi
 
 # ROCm/apex@40608ba for bases that don't ship it: the shelf's prebuilt wheel, or the shelf's recipe
-# built from source for GPU_ARCH. Megatron needs its fused ops.
+# built from source for GPU_ARCH. Megatron needs its fused ops. apex's setup.py imports aiter, which
+# probes the GPU via rocminfo unless GPU_ARCHS is set, and a docker build has no GPU.
 ARG APEX_BUILD_FROM_SOURCE=0
 ARG APEX_COMMIT=40608ba22ccdb87e9f649600b0dc69d1f718d545
 RUN if [ "${APEX_USE_PREBUILT}" = "1" ]; then \
@@ -138,7 +139,7 @@ RUN if [ "${APEX_USE_PREBUILT}" = "1" ]; then \
       pip install cxxfilt==0.3.0 py-cpuinfo==9.0.0 && \
       rm -rf /tmp/apex && git clone https://github.com/ROCm/apex.git /tmp/apex && \
       cd /tmp/apex && git checkout ${APEX_COMMIT} && git submodule update --init --recursive && \
-      APEX_BUILD_CPP_OPS=1 APEX_BUILD_CUDA_OPS=1 pip install . --no-deps --no-build-isolation -v && \
+      GPU_ARCHS=${GPU_ARCH} APEX_BUILD_CPP_OPS=1 APEX_BUILD_CUDA_OPS=1 pip install . --no-deps --no-build-isolation -v && \
       cd / && rm -rf /tmp/apex && \
       python3 -c "import fused_weight_gradient_mlp_cuda"; \
     else \
