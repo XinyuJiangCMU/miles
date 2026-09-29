@@ -16,7 +16,6 @@ register_cuda_ci(
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
 )
-register_rocm_ci(est_time=1600, suite="stage-c-4-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 register_rocm_ci(est_time=1600, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 MODEL_NAME = "gpt-oss-20b-bf16"

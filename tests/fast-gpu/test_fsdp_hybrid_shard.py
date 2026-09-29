@@ -3,7 +3,6 @@
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(est_time=90, suite="stage-c-4-gpu-h200", labels=["fsdp"], hardware=["hopper", "blackwell"])
-register_rocm_ci(est_time=90, suite="stage-c-4-gpu-mi350", labels=["fsdp"])
 register_rocm_ci(est_time=90, suite="nightly-stage-c-4-gpu-mi350", labels=["fsdp"])
 
 import os
