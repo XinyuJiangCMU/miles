@@ -22,10 +22,6 @@ MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
 NUM_GPUS = 4
 
-# AITER's JIT artifact selection omits the runtime sink_ptr signal, so its loaded
-# batch-prefill dispatcher has no has_sink=true arm for this call.
-_PLATFORM_EXTRA_ARGS = "--sglang-attention-backend triton " if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" else ""
-
 # (name, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [
     ("shared-outer + virtual-experts", True, True),
@@ -105,7 +101,7 @@ def execute(shared_outer: bool, virtual_experts: bool):
     )
 
     misc_args = (
-        _PLATFORM_EXTRA_ARGS + "--attention-dropout 0.0 "
+        "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--qkv-format bshd "
         "--attention-backend auto "
