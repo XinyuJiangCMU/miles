@@ -1,5 +1,5 @@
 # doc-dev: docs/developer/ci/02-docker-build.md
-# ROCm / gfx950 image for Miles (built on a prebuilt sglang base):
+# ROCm image for Miles (built on a prebuilt sglang base):
 #
 # 1. rocm724-mi35x  (gfx950, ROCm 7.2.4 / MI350 / MI355X, Python 3.12 base)
 #    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi35x
@@ -8,6 +8,17 @@
 # 2. rocm10-mi35x   (gfx950, ROCm 10 / MI350 / MI355X, Python 3.12 base)
 #    build-arg:SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.20-rocm10-mi35x
 #                WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1   (cp312 shelf)
+#
+# 3. rocm10-mi30x   (gfx942, ROCm 10 / MI300X / MI325X, Python 3.12 base)
+#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.20-rocm10-mi30x-20260919  WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18
+#                TE_USE_WHEEL=0  FLASH_ATTN_USE_WHEEL=0  APEX_BUILD_FROM_SOURCE=1
+#
+# 4. rocm724-mi30x  (gfx942, ROCm 7.2.4 / MI300X / MI325X, Python 3.12 base)
+#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi30x-20260919  WHEELS_TAG_ROCM=rocm724-gfx950-v0.5.20
+#                TE_USE_WHEEL=0  FLASH_ATTN_USE_WHEEL=0  APPLY_ROCR_VMMFIX=1
+#
+# The mi30x variants have no gfx942 wheels shelf: TE, flash-attn (and apex on ROCm 10) build from source at
+# the gfx950 shelf's pins, and the gfx950 shelf supplies only its arch-neutral router, gateway and ROCr fix.
 
 ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
 ARG SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi35x
@@ -38,6 +49,9 @@ ARG RCCL_TESTS_PATH=projects/rccl-tests
 
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
 ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
+# Empty builds the branch head; set a full SHA to pin the source build.
+ARG TRANSFORMER_ENGINE_COMMIT=""
+ARG FLASH_ATTN_VERSION=2.8.3
 ARG MOONCAKE_VERSION=0.3.12.post1
 
 ARG TARGETARCH
@@ -88,25 +102,51 @@ RUN mkdir -p /tmp/wheels && \
     curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; [subprocess.run(['curl','-fsSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) for a in json.load(sys.stdin).get('assets',[]) if a['name'].endswith(('.whl','.tar.gz'))]" && \
     ls -lh /tmp/wheels/
-# Transformer Engine: prebuilt wheel from the variant's wheels shelf, or source build
 ARG TE_USE_WHEEL=0
+ARG FLASH_ATTN_USE_WHEEL=1
+# Extra build deps for the TE / flash-attn source builds; rocm-llvm-dev only exists where ROCm comes from apt (not ROCm 10).
+RUN if [ "${TE_USE_WHEEL}" != "1" ] || [ "${FLASH_ATTN_USE_WHEEL}" != "1" ]; then \
+      apt install -y xxd && \
+      if apt-cache show rocm-llvm-dev >/dev/null 2>&1; then apt install -y rocm-llvm-dev; fi; \
+    fi
+# Transformer Engine: prebuilt wheel from the variant's wheels shelf, or source build
 RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true; \
     if [ "${TE_USE_WHEEL}" = "1" ]; then \
       pip install /tmp/wheels/transformer_engine-*.whl; \
     else \
       rm -rf /root/TransformerEngine && \
       git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
-      cd /root/TransformerEngine && NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v; \
+      cd /root/TransformerEngine && \
+      if [ -n "${TRANSFORMER_ENGINE_COMMIT}" ]; then \
+        git checkout ${TRANSFORMER_ENGINE_COMMIT} && git submodule update --init --recursive; \
+      fi && \
+      NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v; \
     fi
-RUN pip install /tmp/wheels/flash_attn-*.whl
+# flash-attn: prebuilt wheel from the shelf, or the shelf's PyPI-sdist recipe built for GPU_ARCH.
+RUN if [ "${FLASH_ATTN_USE_WHEEL}" = "1" ]; then \
+      pip install /tmp/wheels/flash_attn-*.whl; \
+    else \
+      GPU_ARCHS=${GPU_ARCH} BUILD_TARGET=rocm FLASH_ATTENTION_FORCE_BUILD=TRUE \
+        pip install "flash-attn==${FLASH_ATTN_VERSION}" --no-deps --no-build-isolation -v; \
+    fi
 
-# Prebuilt ROCm/apex@40608ba wheel from the shelf; Megatron needs its fused ops.
+# ROCm/apex@40608ba for bases that don't ship it: the shelf's prebuilt wheel, or the shelf's recipe
+# built from source for GPU_ARCH. Megatron needs its fused ops.
+ARG APEX_BUILD_FROM_SOURCE=0
+ARG APEX_COMMIT=40608ba22ccdb87e9f649600b0dc69d1f718d545
 RUN if [ "${APEX_USE_PREBUILT}" = "1" ]; then \
       pip install cxxfilt==0.3.0 py-cpuinfo==9.0.0 && \
       pip install --no-deps /tmp/wheels/apex-*.whl && \
       python3 -c "import fused_weight_gradient_mlp_cuda"; \
+    elif [ "${APEX_BUILD_FROM_SOURCE}" = "1" ]; then \
+      pip install cxxfilt==0.3.0 py-cpuinfo==9.0.0 && \
+      rm -rf /tmp/apex && git clone https://github.com/ROCm/apex.git /tmp/apex && \
+      cd /tmp/apex && git checkout ${APEX_COMMIT} && git submodule update --init --recursive && \
+      APEX_BUILD_CPP_OPS=1 APEX_BUILD_CUDA_OPS=1 pip install . --no-deps --no-build-isolation -v && \
+      cd / && rm -rf /tmp/apex && \
+      python3 -c "import fused_weight_gradient_mlp_cuda"; \
     else \
-      echo "[apex] prebuilt wheel skipped (APEX_USE_PREBUILT=${APEX_USE_PREBUILT})"; \
+      echo "[apex] skipped (APEX_USE_PREBUILT=${APEX_USE_PREBUILT}, APEX_BUILD_FROM_SOURCE=${APEX_BUILD_FROM_SOURCE})"; \
     fi
 
 # make install lays down mooncake's native modules but not its pure Python files.

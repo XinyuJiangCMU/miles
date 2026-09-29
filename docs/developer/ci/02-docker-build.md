@@ -10,7 +10,7 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 | Path                     | Builds                   | Wired into                             |
 | ------------------------ | ------------------------ | -------------------------------------- |
 | `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`, `release-docker.yml` |
-| `docker/Dockerfile.rocm` | AMD ROCm (MI35x) | `docker-build.yml` (`rocm*-mi35x` variants) |
+| `docker/Dockerfile.rocm` | AMD ROCm (MI35x, MI30x) | `docker-build.yml` (`rocm*-mi35x`, `rocm*-mi30x` variants) |
 
 
 ### `docker/Dockerfile` — inputs & output
@@ -32,7 +32,7 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 
 **Output** — one `radixark/miles` image for the platform buildx targets: the SGLang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM at its branch default or caller-pinned commit, Miles, and the prebuilt wheels (`sgl-router` among them). It also carries `kubectl`, `helm` and `tmux`, which the k8s-native launch path drives the cluster with. A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
-`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). Both ROCm variants build on the `lmsysorg/sglang` ROCm images of the same SGLang release as the CUDA base. `rocm724-mi35x` uses the Python 3.12 base and ROCm 7.2.4 wheels from the `rocm724-gfx950-v0.5.20` release. It sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream.
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). Both mi35x variants build on the `lmsysorg/sglang` ROCm images of the same SGLang release as the CUDA base. `rocm724-mi35x` uses the Python 3.12 base and ROCm 7.2.4 wheels from the `rocm724-gfx950-v0.5.20` release. It sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream. The MI300X / MI325X (`gfx942`) variants `rocm10-mi30x` and `rocm724-mi30x` use the dated `rocm/sgl-dev` MI30x nightly bases. No `gfx942` wheels release exists, so they set `TE_USE_WHEEL=0` and `FLASH_ATTN_USE_WHEEL=0`: Transformer Engine builds from source at the same fork commit as the matching `gfx950` wheel (`TRANSFORMER_ENGINE_REPO` / `_BRANCH` / `_COMMIT`), and flash-attn builds from its PyPI sdist for `GPU_ARCH`. `rocm10-mi30x` also sets `APEX_BUILD_FROM_SOURCE=1`, because its base, like the `rocm10-mi35x` one, ships no apex. Each still points `WHEELS_TAG_ROCM` at the matching `gfx950` release, but uses only that release's arch-neutral assets: the router wheel, the gateway, and, on ROCm 7.2.4, the ROCr fix.
 
 ### `docker/install-kube-tools.sh`
 
@@ -51,6 +51,8 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 | `cu12-x86`     | `radixark/miles:dev-cu12`          | `linux/amd64`                 | CUDA 12.9 legacy                               |
 | `rocm724-mi35x` | `rocm/sgl-dev:miles-rocm724-mi35x` | native                       | AMD MI35x (`gfx950`, ROCm 7.2.4) — `docker/Dockerfile.rocm` |
 | `rocm10-mi35x`  | `rocm/sgl-dev:miles-rocm10-mi35x`  | native                       | AMD MI35x (`gfx950`, ROCm 10, ROCm SDK as pip wheels) — `docker/Dockerfile.rocm` |
+| `rocm10-mi30x`  | `rocm/sgl-dev:miles-rocm10-mi30x`  | native                       | AMD MI300X / MI325X (`gfx942`, ROCm 10; TE, flash-attn and apex built from source) — `docker/Dockerfile.rocm` |
+| `rocm724-mi30x` | `rocm/sgl-dev:miles-rocm724-mi30x` | native                       | AMD MI300X / MI325X (`gfx942`, ROCm 7.2.4; TE and flash-attn built from source) — `docker/Dockerfile.rocm` |
 
 
 The cu13 variants share one multi-arch CUDA base image and differ only in platforms. `cu13` runs a single `buildx --platform linux/amd64,linux/arm64` — buildx builds both arches and pushes them as one manifest in a single shot, with the Dockerfile picking each layer's wheels by `TARGETARCH` (see Dockerfile inputs), so `docker pull` auto-selects by host arch.
@@ -105,7 +107,7 @@ This workflow owns the rolling `dev` and `latest` image families. It has three j
 ### Triggers: automatic vs manual
 
 - **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both leave `--variant` empty and build **two images**: `cu13` → `radixark/miles` (multi-arch) and `cu12-x86` → `radixark/miles:dev-cu12`.
-- **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. Only the `rocm*-mi35x` images have **no automatic path in this repo** (their nightlies live in sgl-project/sglang) (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
+- **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. Only the ROCm images (`rocm*-mi35x`, `rocm*-mi30x`) have **no automatic path in this repo** (their nightlies live in sgl-project/sglang) (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 `docker/build.py` and `docker/patch/**` participate in PR image validation but are not `main`-push triggers; [Release a Version](/developer/ci/04-release) treats them as manual preflight cases.
 
@@ -127,6 +129,7 @@ All images push to **Docker Hub**. CUDA variants → `radixark/miles`; ROCm vari
 | `cu13` / `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` + `radixark/miles:dev-<YYYYMMDDHHMM>` | `radixark/miles:latest` |
 | `cu12-x86` | `radixark/miles:dev-cu12` (+ timestamped sibling) | `radixark/miles:latest-cu12` |
 | `rocm724-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` (+ timestamped sibling) | `rocm/sgl-dev:latest-rocm*-mi35x` |
+| `rocm10-mi30x` / `rocm724-mi30x` | `rocm/sgl-dev:miles-rocm*-mi30x` (+ timestamped sibling) | `rocm/sgl-dev:latest-rocm*-mi30x` |
 
 What **moves a shared tag**: `--image-tag dev` overwrites `:dev` (or `:dev-cu12`) and adds a timestamped sibling; on a **scheduled** run `latest`→`dev` *and* `latest-cu12`→`dev-cu12` both advance; pruning likewise runs **only on schedule**, keeping the newest 20 of **each** series — `dev-<ts>` and `dev-cu12-<ts>` independently — and never deleting a tag younger than 14 days. Any `workflow_dispatch` — **including** `simulate_schedule` — writes its own tag(s) but never moves `latest` or prunes; only the real cron mutates published tags. See the trigger table above.
 
@@ -145,7 +148,7 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 
 | input | required | values / default |
 | ----- | -------- | ---------------- |
-| `variant` | yes | `cu13` / `cu13-x86` / `cu13-aarch64` / `cu12-x86` / `rocm724-mi35x` / `rocm10-mi35x` |
+| `variant` | yes | `cu13` / `cu13-x86` / `cu13-aarch64` / `cu12-x86` / `rocm724-mi35x` / `rocm10-mi35x` / `rocm10-mi30x` / `rocm724-mi30x` |
 | `image_tag` | yes | `dev` / `latest` / `custom` |
 | `custom_tag` | no | tag name; required when `image_tag=custom` |
 | `dockerfile` | no | path to Dockerfile (default `docker/Dockerfile`) |

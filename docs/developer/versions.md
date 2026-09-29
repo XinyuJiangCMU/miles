@@ -95,6 +95,7 @@ fleet's image is.
 | `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` | Single-arch rebuilds of the same image |
 | `cu12-x86` | `radixark/miles:dev-cu12` | `linux/amd64`, CUDA 12.9 legacy |
 | `rocm724-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` | Native |
+| `rocm10-mi30x` / `rocm724-mi30x` | `rocm/sgl-dev:miles-rocm*-mi30x` | Native, MI300X / MI325X |
 
 `--image-tag dev` also publishes a timestamped sibling. Scheduled retention and manual tag behavior are documented in [Docker build](/developer/ci/02-docker-build).
 
