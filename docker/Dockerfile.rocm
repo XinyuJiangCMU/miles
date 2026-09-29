@@ -13,12 +13,8 @@
 #    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.20-rocm10-mi30x-20260919  WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18
 #                TE_USE_WHEEL=0  FLASH_ATTN_USE_WHEEL=0  APEX_BUILD_FROM_SOURCE=1
 #
-# 4. rocm724-mi30x  (gfx942, ROCm 7.2.4 / MI300X / MI325X, Python 3.12 base)
-#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi30x-20260919  WHEELS_TAG_ROCM=rocm724-gfx950-v0.5.20
-#                TE_USE_WHEEL=0  FLASH_ATTN_USE_WHEEL=0  APPLY_ROCR_VMMFIX=1
-#
-# The mi30x variants have no gfx942 wheels shelf: TE, flash-attn (and apex on ROCm 10) build from source at
-# the gfx950 shelf's pins, and the gfx950 shelf supplies only its arch-neutral router, gateway and ROCr fix.
+# The mi30x variant has no gfx942 wheels shelf: TE, flash-attn and apex build from source at
+# the gfx950 shelf's pins, and the gfx950 shelf supplies only its arch-neutral router and gateway.
 
 ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
 ARG SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi35x

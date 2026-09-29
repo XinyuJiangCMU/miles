@@ -30,7 +30,6 @@ on:
           - rocm724-mi35x
           - rocm10-mi35x
           - rocm10-mi30x
-          - rocm724-mi30x
       image_tag:
         description: 'Tag mode: latest, dev (rolling + timestamped), or custom'
         required: true

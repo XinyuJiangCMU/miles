@@ -18,7 +18,6 @@ workflows and published to Docker Hub under
 | `rocm/sgl-dev:miles-rocm10-mi35x` | 10 | MI350X / MI355X | Python 3.12 — the image the nightly tests run on |
 | `rocm/sgl-dev:miles-rocm724-mi35x` | 7.2.4 | MI350X / MI355X | Python 3.12 |
 | `rocm/sgl-dev:miles-rocm10-mi30x` | 10 | MI300X / MI325X | Python 3.12 — the image the MI300X nightly tests run on |
-| `rocm/sgl-dev:miles-rocm724-mi30x` | 7.2.4 | MI300X / MI325X | Python 3.12 |
 
 Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
 `miles-rocm10-mi35x-20260916`) to pin one.
@@ -26,7 +25,7 @@ Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
 To build an image yourself, `docker/Dockerfile.rocm` holds the recipe:
 
 ```bash
-python docker/build.py --variant rocm10-mi35x --image-tag dev    # or rocm724-mi35x, rocm10-mi30x, rocm724-mi30x
+python docker/build.py --variant rocm10-mi35x --image-tag dev    # or rocm724-mi35x, rocm10-mi30x
 ```
 
 ## Start the container

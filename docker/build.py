@@ -81,7 +81,7 @@ VARIANTS = {
             "TE_USE_WHEEL": "1",
         },
     },
-    # No gfx942 wheel shelf yet: the mi30x variants build TE, flash-attn (and apex on ROCm 10)
+    # No gfx942 wheel shelf yet: the mi30x variant builds TE, flash-attn and apex
     # from source, pinned to the same sources as the gfx950 shelf; the shelf only supplies arch-neutral assets.
     "rocm10-mi30x": {
         "image": "rocm/sgl-dev",
@@ -98,24 +98,6 @@ VARIANTS = {
             "TRANSFORMER_ENGINE_REPO": "https://github.com/XinyuJiangCMU/TransformerEngine.git",
             "TRANSFORMER_ENGINE_BRANCH": "miles-dev",
             "TRANSFORMER_ENGINE_COMMIT": "2f663a0b87580ae375894bf42b9de87b1edc9b31",
-            "FLASH_ATTN_USE_WHEEL": "0",
-        },
-    },
-    "rocm724-mi30x": {
-        "image": "rocm/sgl-dev",
-        "tag_postfix": "-rocm724-mi30x",
-        "tag_prefix": "miles",
-        "dockerfile": "docker/Dockerfile.rocm",
-        "build_args": {
-            "GPU_ARCH": "gfx942",
-            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
-            "SGLANG_IMAGE_TAG": "v0.5.20-rocm724-mi30x-20260919",
-            "WHEELS_TAG_ROCM": "rocm724-gfx950-v0.5.20",
-            "APPLY_ROCR_VMMFIX": "1",
-            "TE_USE_WHEEL": "0",
-            "TRANSFORMER_ENGINE_REPO": "https://github.com/XinyuJiangCMU/TransformerEngine.git",
-            "TRANSFORMER_ENGINE_BRANCH": "miles-dev",
-            "TRANSFORMER_ENGINE_COMMIT": "080b76df7ad83c7d1a54b9c369293ba1e90c6cf6",
             "FLASH_ATTN_USE_WHEEL": "0",
         },
     },
@@ -216,7 +198,6 @@ class Variant(str, Enum):
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
     rocm10_mi30x = "rocm10-mi30x"
-    rocm724_mi30x = "rocm724-mi30x"
 
 
 class ImageTag(str, Enum):
