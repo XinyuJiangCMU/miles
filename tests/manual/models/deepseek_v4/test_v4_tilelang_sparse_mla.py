@@ -10,7 +10,7 @@ Diff metrics follow the dumper comparator convention:
   - abs_diff percentiles (p50, p95, p99)
 
 Test matrix covers:
-  - V4 real configs: H=64 (n_local_heads on single TP), D=512, various topk
+  - V4 real configs: H=64 (TP=1) and H=16 (TP=4), D=512, various topk
   - Smaller configs for faster testing: H=8, H=16
   - Different sequence lengths: 128, 256, 512, 1024, 2048
   - Different batch sizes: 1, 2
@@ -20,6 +20,7 @@ Test matrix covers:
 """
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -31,6 +32,7 @@ except ImportError:
 
 if tilelang is not None:
     from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
+    from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_bwd import _get_gfx950_tuning_profile
     from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla_fwd import sparse_mqa_fwd_interface
 else:
     sparse_attn_tilelang = None
@@ -269,6 +271,14 @@ BACKWARD_CONFIGS = [
     (2, 128, 8, 512, 160, 64),
     (1, 256, 64, 512, 320, 128),
     (1, 512, 8, 512, 640, 256),
+    (1, 512, 16, 512, 512, 128),
+    (1, 512, 16, 512, 515, 160),
+    (1, 512, 16, 512, 640, 256),
+    (1, 512, 64, 512, 640, 256),
+    (1, 1024, 16, 512, 1032, 160),
+    (1, 1024, 16, 512, 1280, 384),
+    (1, 1024, 64, 512, 1280, 512),
+    (1, 2048, 64, 512, 2560, 512),
 ]
 
 BACKWARD_IDS = [f"b{b}_s{s}_h{h}_d{d}_kv{kv}_top{tk}" for b, s, h, d, kv, tk in BACKWARD_CONFIGS]
@@ -315,10 +325,14 @@ def ref_dense_attn_with_grad(q, kv, attn_sink, topk_idxs, sm_scale):
 @requires_cuda()
 @requires_tilelang()
 @pytest.mark.parametrize("batch,seqlen,heads,dim,seqlen_kv,topk", BACKWARD_CONFIGS, ids=BACKWARD_IDS)
-def test_sparse_mla_backward(batch, seqlen, heads, dim, seqlen_kv, topk):
+@pytest.mark.parametrize("invalid_indices", [False, True])
+def test_sparse_mla_backward(batch, seqlen, heads, dim, seqlen_kv, topk, invalid_indices):
     """Compare tilelang backward gradients against PyTorch autograd reference."""
     q_base, kv_base, attn_sink_base, topk_idxs = make_inputs(batch, seqlen, heads, dim, seqlen_kv, topk)
     sm_scale = (1.0 / dim) ** 0.5
+
+    if invalid_indices:
+        topk_idxs[:, :, topk * 3 // 4 :] = -1
 
     # Reference
     ref_o, ref_dq, ref_dkv, ref_d_sink = ref_dense_attn_with_grad(q_base, kv_base, attn_sink_base, topk_idxs, sm_scale)
@@ -345,9 +359,8 @@ def test_sparse_mla_backward(batch, seqlen, heads, dim, seqlen_kv, topk):
         ("dKV", ref_dkv, kv_tl.grad),
         ("dAttnSink", ref_d_sink, sink_tl.grad),
     ]:
-        if ref_g is None or tl_g is None:
-            print(f"  {name}: SKIPPED (None)")
-            continue
+        assert ref_g is not None and tl_g is not None, f"{name} gradient is missing"
+        assert torch.isfinite(tl_g).all(), f"{name} gradient is not finite"
         diff = compute_diff(ref_g.float(), tl_g.float())
         print_diff(name, diff)
         # Backward has larger tolerance due to bf16 GEMM + atomic adds
@@ -412,6 +425,41 @@ def test_diff_summary():
         )
 
     print("=" * 100)
+
+
+@requires_tilelang()
+@pytest.mark.parametrize(
+    "hip,arch,shape,kv_length,topk,expected_profile",
+    [
+        ("7.2", "gfx950:sramecc+:xnack-", (1, 512, 16, 512), 512, 128, "h16"),
+        ("7.2", "gfx950", (1, 512, 16, 512), 515, 160, "h16"),
+        ("7.2", "gfx950", (1, 512, 16, 512), 640, 256, "h16"),
+        ("7.2", "gfx950", (1, 1024, 16, 512), 1032, 160, "h16"),
+        ("7.2", "gfx950", (1, 1024, 16, 512), 1280, 384, "h16"),
+        ("7.2", "gfx950:sramecc+:xnack-", (1, 512, 64, 512), 640, 256, "h64"),
+        ("7.2", "gfx950", (1, 1024, 64, 512), 1280, 512, "h64"),
+        ("7.2", "gfx950", (1, 2048, 64, 512), 2560, 512, "h64"),
+        ("7.2", "gfx942", (1, 512, 16, 512), 640, 256, None),
+        (None, "", (1, 512, 16, 512), 640, 256, None),
+        ("7.2", "gfx950", (2, 512, 16, 512), 640, 256, None),
+        ("7.2", "gfx950", (1, 512, 8, 512), 640, 256, None),
+        ("7.2", "gfx950", (1, 512, 16, 256), 640, 256, None),
+        ("7.2", "gfx950", (1, 512, 16, 512), 640, 128, None),
+    ],
+)
+def test_gfx950_backward_dispatch(monkeypatch, hip, arch, shape, kv_length, topk, expected_profile):
+    monkeypatch.setattr(torch.version, "hip", hip)
+    queried_devices = []
+
+    def properties(device):
+        queried_devices.append(device)
+        return SimpleNamespace(gcnArchName=arch)
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", properties)
+    q = SimpleNamespace(shape=shape, device="cuda:1")
+    kv = SimpleNamespace(shape=(shape[0], kv_length, shape[-1]))
+    assert _get_gfx950_tuning_profile(q, kv, topk) == expected_profile
+    assert queried_devices == ([q.device] if expected_profile is not None or arch == "gfx942" else [])
 
 
 if __name__ == "__main__":
