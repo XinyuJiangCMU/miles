@@ -105,10 +105,17 @@ RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_to
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
 # Prebuilt ROCm/apex@40608ba wheel from the shelf; Megatron needs its fused ops.
+# The check reads apex's files by path: `import apex` pulls in aiter, which needs a GPU the build host lacks.
 RUN if [ "${APEX_USE_PREBUILT}" = "1" ]; then \
       pip install cxxfilt==0.3.0 py-cpuinfo==9.0.0 && \
       pip install --no-deps /tmp/wheels/apex-*.whl && \
-      python3 -c "from apex.git_version_info import installed_ops; assert installed_ops.get('fused_weight_gradient_mlp_cuda'), 'apex wheel lacks the prebuilt fused_weight_gradient_mlp_cuda'; import fused_weight_gradient_mlp_cuda as m; m.wgrad_gemm_accum_fp32"; \
+      python3 -c "import glob, importlib.util as iu, os, torch; \
+        d = iu.find_spec('apex').submodule_search_locations[0]; \
+        info = {}; exec(open(os.path.join(d, 'git_version_info_installed.py')).read(), info); \
+        assert info['installed_ops'].get('fused_weight_gradient_mlp_cuda'), 'apex wheel lacks the prebuilt fused_weight_gradient_mlp_cuda'; \
+        so, = glob.glob(os.path.join(d, 'fused_weight_gradient_mlp_cuda.*.so')); \
+        s = iu.spec_from_file_location('fused_weight_gradient_mlp_cuda', so); m = iu.module_from_spec(s); s.loader.exec_module(m); \
+        m.wgrad_gemm_accum_fp32"; \
     else \
       echo "[apex] prebuilt wheel skipped (APEX_USE_PREBUILT=${APEX_USE_PREBUILT})"; \
     fi
