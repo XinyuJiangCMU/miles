@@ -93,6 +93,7 @@ VARIANTS = {
             "WHEELS_TAG_ROCM": "rocm10-gfx942-v0.5.20",
             "APEX_USE_PREBUILT": "1",
             "TE_USE_WHEEL": "1",
+            "AITER_PREBUILD_JIT": "1",
         },
     },
 }

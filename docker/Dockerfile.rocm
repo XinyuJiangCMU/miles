@@ -12,6 +12,7 @@
 # 3. rocm10-mi30x   (gfx942, ROCm 10 / MI300X / MI325X, Python 3.12 base)
 #    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.20-rocm10-mi30x-20260919
 #                WHEELS_TAG_ROCM=rocm10-gfx942-v0.5.20  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1   (cp312 shelf)
+#                AITER_PREBUILD_JIT=1
 
 ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
 ARG SGLANG_IMAGE_TAG=v0.5.20-rocm724-mi35x
@@ -161,6 +162,16 @@ RUN cd /sgl-workspace/sglang && \
 RUN pip install "numba==0.65.1"
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
+
+# aiter compiles the attention kernels the base image leaves out (sglang's extend and decode ones) on
+# first use, which costs every fresh container minutes in hipcc. 1 builds sglang's bf16 ones for GPU_ARCH.
+ARG AITER_PREBUILD_JIT=0
+RUN --mount=type=bind,source=docker/prebuild_aiter_jit.py,target=/tmp/prebuild_aiter_jit.py \
+    if [ "${AITER_PREBUILD_JIT}" = "1" ]; then \
+      GPU_ARCHS=${GPU_ARCH} python3 /tmp/prebuild_aiter_jit.py; \
+    else \
+      echo "[aiter] JIT prebuild skipped (AITER_PREBUILD_JIT=${AITER_PREBUILD_JIT})"; \
+    fi
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@06caa534822c5b980b61733a5d79ac731f9a5f9c --no-cache-dir --force-reinstall --no-build-isolation
 
