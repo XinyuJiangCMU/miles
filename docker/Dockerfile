@@ -11,7 +11,7 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
-ARG SGLANG_IMAGE_TAG=v0.5.20
+ARG SGLANG_IMAGE_TAG=v0.5.21
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -23,10 +23,12 @@ ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
+ARG TORCHTITAN_REPO=pytorch/torchtitan
+ARG TORCHTITAN_COMMIT=086bf6c166ec85c1298eb5596fa9bf95f6a2d840
 
 ARG ENABLE_CUDA_13=1
 
-ARG WHEELS_REPO=yueming-yuan/miles-wheels
+ARG WHEELS_REPO=radixark/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
@@ -94,6 +96,11 @@ RUN pip install flash-linear-attention==0.5.2 && \
     rm /tmp/fla_kda_hoist_next_power_of_2.patch
 # required for DeepSeek V4
 RUN pip install tilelang==0.1.14 apache-tvm-ffi==0.1.11
+# TileLang fp16 256-bit store fix on Blackwell: https://github.com/tile-ai/tilelang/pull/3158. Drop with TileLang > 0.1.14.
+COPY docker/patch/tilelang_pack_float16x4.patch /tmp/tilelang_pack_float16x4.patch
+RUN TILELANG_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("tilelang").submodule_search_locations[0])') && \
+    patch --fuzz=0 -p1 -d "$TILELANG_DIR" < /tmp/tilelang_pack_float16x4.patch && \
+    rm /tmp/tilelang_pack_float16x4.patch
 # TileKernels target-import fix: https://github.com/deepseek-ai/TileKernels/pull/25.
 COPY docker/patch/tile_kernels_target.patch /tmp/tile_kernels_target.patch
 RUN pip install --no-deps tile_kernels==1.0.0 && \
@@ -102,8 +109,6 @@ RUN pip install --no-deps tile_kernels==1.0.0 && \
     rm /tmp/tile_kernels_target.patch
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 # Its dependency pins would downgrade TileLang and TVM-FFI; use the versions above.
-# FlashQLA FP16 on Blackwell retains a pre-existing compile failure.
-# Fixed after 0.1.14 by https://github.com/tile-ai/tilelang/pull/3158.
 RUN pip install -v --no-deps --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git@7c7dfe16416ad21b1d03258189fc8d3b8460ae06"
 # Prefer the prebuilt wheel; fall back to a source build while the current
 # arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
@@ -193,6 +198,15 @@ RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@8cd3466d14d2337c8492827b3712482c2b3e4866 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
+
+# torchtitan backend: pinned to the v0.3.0 release commit because torchtitan tracks
+# torch nightly and its model/adapter layouts move; --no-deps keeps its torch and
+# datasets pins from touching the versions sglang links against. Its own python
+# deps are pinned explicitly (spmd_types is a hard import in parallel_dims).
+RUN git clone https://github.com/${TORCHTITAN_REPO}.git torchtitan && \
+    cd torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
+    pip install --no-deps -e .
+RUN pip install "spmd_types==0.2.3" "tyro>=1.0.5" && pip install --no-deps "torchdata>=0.8.0"
 
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
