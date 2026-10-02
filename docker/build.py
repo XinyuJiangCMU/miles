@@ -88,8 +88,8 @@ VARIANTS = {
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
             "GPU_ARCH": "gfx942",
-            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
-            "SGLANG_IMAGE_TAG": "v0.5.20-rocm10-mi30x-20260919",
+            "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
+            "SGLANG_IMAGE_TAG": "v0.5.20-rocm10-mi30x",
             "WHEELS_TAG_ROCM": "rocm10-gfx942-v0.5.20",
             "APEX_USE_PREBUILT": "1",
             "TE_USE_WHEEL": "1",

@@ -10,7 +10,7 @@
 #                WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1   (cp312 shelf)
 #
 # 3. rocm10-mi30x   (gfx942, ROCm 10 / MI300X / MI325X, Python 3.12 base)
-#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.20-rocm10-mi30x-20260919
+#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_REPO=lmsysorg/sglang  SGLANG_IMAGE_TAG=v0.5.20-rocm10-mi30x
 #                WHEELS_TAG_ROCM=rocm10-gfx942-v0.5.20  TE_USE_WHEEL=1  APEX_USE_PREBUILT=1   (cp312 shelf)
 #                AITER_PREBUILD_JIT=1
 
