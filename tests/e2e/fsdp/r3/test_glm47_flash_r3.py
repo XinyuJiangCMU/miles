@@ -5,6 +5,8 @@ This is the case that exercises keying replay streams by global layer index: an 
 MoE blocks would shift every layer by one against the rollout tensor.
 """
 
+import os
+
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.fsdp.r3._common import CaseConfig, main
@@ -22,6 +24,9 @@ CASE = CaseConfig(
     num_gpus=8,
     rollout_num_gpus_per_engine=2,
 )
+if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
+    CASE.sglang_attention_backend = "triton"
+    CASE.attn_implementation = "flash_attention_2"
 
 
 if __name__ == "__main__":
