@@ -82,13 +82,16 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
 
     replay_args = "--use-rollout-routing-replay "
 
+    attention_args = "--sglang-attention-backend fa3 --attn-implementation flash_attention_3 "
+    if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" and case.model_name == "GLM-4.7-Flash":
+        attention_args = "--sglang-attention-backend triton --attn-implementation flash_attention_2 "
+
     sglang_args = (
         f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "
         "--sglang-mem-fraction-static 0.8 "
         "--sglang-decode-log-interval 1000 "
         "--sglang-chunked-prefill-size 4096 "
-        "--sglang-attention-backend fa3 "
-        "--attn-implementation flash_attention_3 "
+        f"{attention_args}"
     )
 
     ci_args = "--ci-test "
