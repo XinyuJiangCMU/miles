@@ -11,11 +11,12 @@ exchange by running one forward per stage over microbatch 0, and repeats that
 whenever the pass changes direction (in RL, every log-prob-then-train pair).
 """
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 # Needs a GPU only because the shared replay queue hands its entries out on the
 # current CUDA device; the alignment being tested is device-independent.
 register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"])
+register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["torchtitan", "replay"])
 
 import pytest
 import torch

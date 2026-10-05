@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import fully_shard
 from torch.distributed.tensor import DTensor
@@ -9,6 +9,7 @@ from torch.distributed.tensor import DTensor
 from miles.backends.training_utils.torch_native.offload import move_train_state
 
 register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["fsdp", "torchtitan"], hardware=["hopper"])
+register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["fsdp", "torchtitan"])
 
 
 def _local(tensor: torch.Tensor) -> torch.Tensor:
