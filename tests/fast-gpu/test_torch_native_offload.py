@@ -50,3 +50,11 @@ def test_offload_round_trips_fsdp_state_through_pinned_host_memory(monkeypatch):
         optimizer.step()
     finally:
         dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))
