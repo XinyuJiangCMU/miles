@@ -168,3 +168,9 @@ def test_the_reference_model_is_left_alone(part):
 
     with routing_replay.consumption_guard([other], 7):
         pass
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(pytest.main([__file__, "-v"]))
