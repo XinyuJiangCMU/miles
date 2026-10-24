@@ -80,11 +80,11 @@ _TUNED = {
     ("gfx950", True, 8): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
     ("gfx950", True, 16): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
     ("gfx950", True, 32): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
-    ("gfx950", True, 64): SparseAttentionConfig(forward_backend="tilelang"),
+    ("gfx950", True, 64): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
     ("gfx950", False, 8): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
     ("gfx950", False, 16): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
     ("gfx950", False, 32): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
-    ("gfx950", False, 64): SparseAttentionConfig(forward_backend="tilelang"),
+    ("gfx950", False, 64): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
 }
 
 # (arch major, heads bucket) where the TileLang backward beat cuDNN at topk <= _SHORT_TOPK (sliding-window layers)
